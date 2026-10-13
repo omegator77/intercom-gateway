@@ -154,7 +154,7 @@ class LineWorker:
             dead_t.cancel()
 
     def status(self) -> dict:
-        in_db, out_db = self.audio.levels() if self.audio else (float("-inf"), float("-inf"))
+        in_db, out_db = self.audio.levels() if self.audio else (-120.0, -120.0)  # same floor as audio.Level
         return {
             "line": self.cfg.name,
             "state": self.state.value,

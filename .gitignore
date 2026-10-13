@@ -5,5 +5,6 @@ __pycache__/
 *.log
 *.log.*
 gateway.toml
+gateway.*.toml
 dev/.state/
 *.egg-info/

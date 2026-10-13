@@ -7,6 +7,7 @@ import logging
 import logging.handlers
 import signal
 import sys
+from pathlib import Path
 
 from . import __version__
 from .audio import DeviceError, make_line_audio, match_device
@@ -26,6 +27,7 @@ def setup_logging(verbose: bool, logfile: str | None) -> None:
     console.setFormatter(fmt)
     root.addHandler(console)
     if logfile:
+        Path(logfile).expanduser().parent.mkdir(parents=True, exist_ok=True)
         fh = logging.handlers.RotatingFileHandler(logfile, maxBytes=1_000_000, backupCount=5, encoding="utf-8")
         fh.setFormatter(fmt)
         root.addHandler(fh)
@@ -82,10 +84,13 @@ async def cmd_check(cfg: Config) -> int:
     return 0 if ok else 1
 
 
-async def cmd_run(cfg: Config, status_every: float) -> int:
+async def cmd_run(cfg: Config, status_every: float, seconds: float | None = None) -> int:
     loop = asyncio.get_running_loop()
     http = await create_client(cfg.server.url)
     workers = [LineWorker(l, cfg.server, cfg.audio, make_line_audio, http) for l in cfg.lines]
+    if seconds:
+        log.info("will stop by itself after %.0f s", seconds)
+        loop.call_later(seconds, lambda: [w.stop() for w in workers])
     for w in workers:
         log.info("line %r -> production %s line %s as %s", w.cfg.name, w.cfg.production_id, w.cfg.line_id, w.cfg.username)
 
@@ -127,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("-v", "--verbose", action="store_true")
     p_run.add_argument("--log-file", default="gateway.log")
     p_run.add_argument("--status-every", type=float, default=30.0)
+    p_run.add_argument("--seconds", type=float, default=None, help="stop by itself after this many seconds (for tests)")
     sub.add_parser("devices", help="list usable audio devices")
 
     a = ap.parse_args(argv)
@@ -140,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if a.cmd == "check":
         return asyncio.run(cmd_check(cfg))
-    return asyncio.run(cmd_run(cfg, a.status_every))
+    return asyncio.run(cmd_run(cfg, a.status_every, a.seconds))
 
 
 if __name__ == "__main__":
