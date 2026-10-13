@@ -1,0 +1,39 @@
+# Copy to gateway.toml. Keep passwords out of this file: use password_env and set the variable
+# in the environment of the task/service that starts the gateway.
+
+[server]
+url = "https://intercom.example.com"
+# ice_servers = []          # none needed when the media bridge has a public address
+
+[audio]
+backend = "portaudio"       # "synthetic" = test tones, no sound card
+playout_ms = 60             # jitter-buffer prefetch; lower = less delay, higher = more robust
+
+# One [[line]] per intercom line. Each needs its OWN account (role participant in that production);
+# never log that account in on a human's browser as well, the gateway keeps it logged in.
+#
+# Device names follow Dante Virtual Soundcard (WDM): "DVS Receive x-y" is audio coming FROM the
+# Dante network into this PC (the gateway captures it), "DVS Transmit x-y" is audio going TO the
+# Dante network (the gateway plays the line's mix into it). List names with:  intercom-gateway devices
+
+[[line]]
+name = "Regie"
+production_id = "2"
+line_id = "1"
+username = "gateway-regie"
+password_env = "GW_REGIE_PASSWORD"
+input_device = "DVS Receive 1-2"
+input_channels = [0]        # 0 = left of the pair, 1 = right; several = mixed to mono
+in_gain_db = 0.0
+output_device = "DVS Transmit 1-2"
+output_channels = [0, 1]    # the line is mono: played on these channels
+out_gain_db = 0.0           # the media bridge's mix is quiet (measured ~ -9 dB); raise here
+
+[[line]]
+name = "Technik"
+production_id = "2"
+line_id = "2"
+username = "gateway-technik"
+password_env = "GW_TECHNIK_PASSWORD"
+input_device = "DVS Receive 3-4"
+output_device = "DVS Transmit 3-4"

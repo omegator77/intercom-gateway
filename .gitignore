@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .env
 *.log
+*.log.*
+gateway.toml
+dev/.state/
+*.egg-info/
