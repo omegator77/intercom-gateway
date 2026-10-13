@@ -66,3 +66,18 @@ def test_disabled_line_is_skipped_and_portaudio_needs_a_device():
     assert len(cfg(line=[BASE["line"][0], other]).lines) == 1
     with pytest.raises(ConfigError, match="input_device"):
         parse_config({**BASE, "audio": {"backend": "portaudio"}}, env={"PW": "x"})
+
+
+def test_password_falls_back_to_credential_store():
+    base = {"server": {"url": "https://x.test"}, "audio": {"backend": "synthetic"},
+            "line": [{"name": "A", "production_id": 1, "line_id": 1, "username": "gw"}]}
+    cfg = parse_config(base, {}, lambda url, user: "stored-pw" if (url, user) == ("https://x.test", "gw") else None)
+    assert cfg.lines[0].password == "stored-pw"
+    with pytest.raises(ConfigError, match="no password"):
+        parse_config(base, {}, lambda url, user: None)
+
+
+def test_env_password_wins_over_credential_store():
+    data = {"server": {"url": "https://x.test"}, "audio": {"backend": "synthetic"},
+            "line": [{"name": "A", "production_id": 1, "line_id": 1, "username": "gw", "password_env": "PW"}]}
+    assert parse_config(data, {"PW": "from-env"}, lambda *_: "stored").lines[0].password == "from-env"

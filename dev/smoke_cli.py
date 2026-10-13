@@ -25,7 +25,7 @@ if LOG.exists():
     LOG.unlink()
 threading.Timer(RUN_FOR_S, lambda: signal.raise_signal(signal.SIGINT)).start()
 t0 = time.monotonic()
-code = main(["run", "-c", str(STATE / "gateway.local.toml"), "--log-file", str(LOG), "--status-every", "3"])
+code = main(["run", "-c", str(STATE / "gateway.local.toml"), "--log-file", str(LOG), "--status-every", "3", "--state-dir", str(STATE)])
 took = time.monotonic() - t0
 
 text = LOG.read_text(encoding="utf-8")

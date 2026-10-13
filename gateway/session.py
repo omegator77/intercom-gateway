@@ -157,6 +157,11 @@ class LineWorker:
         in_db, out_db = self.audio.levels() if self.audio else (-120.0, -120.0)  # same floor as audio.Level
         return {
             "line": self.cfg.name,
+            "production_id": self.cfg.production_id,
+            "line_id": self.cfg.line_id,
+            "username": self.cfg.username,
+            "input_device": self.cfg.input_device,
+            "output_device": self.cfg.output_device,
             "state": self.state.value,
             "session": self.session_id,
             "sessions_started": self.sessions_started,

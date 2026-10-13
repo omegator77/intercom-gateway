@@ -5,7 +5,9 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
+
+from . import credentials
 
 
 class ConfigError(Exception):
@@ -63,7 +65,8 @@ def _gain(value, field: str, line: str) -> float:
     return g
 
 
-def parse_config(data: Mapping, env: Mapping[str, str] | None = None) -> Config:
+def parse_config(data: Mapping, env: Mapping[str, str] | None = None,
+                 lookup_password: Callable[[str, str], str | None] | None = None) -> Config:
     env = os.environ if env is None else env
 
     server = data.get("server") or {}
@@ -106,7 +109,10 @@ def parse_config(data: Mapping, env: Mapping[str, str] | None = None) -> Config:
         elif raw.get("password"):
             password = str(raw["password"])
         else:
-            raise ConfigError(f"line {name!r}: set password_env (recommended) or password")
+            password = (lookup_password or credentials.get_password)(url, str(raw["username"])) or ""
+            if not password:
+                raise ConfigError(f"line {name!r}: no password - enter it in the UI (stored in the Windows "
+                                  "Credential Manager) or set password_env")
 
         relay = str(raw.get("relay_type", "mixed"))
         if relay != "mixed":
@@ -139,7 +145,8 @@ def parse_config(data: Mapping, env: Mapping[str, str] | None = None) -> Config:
     return Config(ServerCfg(url, tuple(ice)), AudioCfg(backend, playout), tuple(lines))
 
 
-def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> Config:
+def load_config(path: str | Path, env: Mapping[str, str] | None = None,
+                lookup_password: Callable[[str, str], str | None] | None = None) -> Config:
     p = Path(path)
     try:
         with p.open("rb") as f:
@@ -148,4 +155,4 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> Confi
         raise ConfigError(f"config file not found: {p}") from None
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"invalid TOML in {p}: {e}") from None
-    return parse_config(data, env)
+    return parse_config(data, env, lookup_password)

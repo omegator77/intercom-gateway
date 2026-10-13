@@ -15,10 +15,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ui = ["PySide6-Essentials>=6.7", "keyring>=24"]
 dev = ["pytest>=8"]
 
 [project.scripts]
 intercom-gateway = "gateway.__main__:main"
+
+[project.gui-scripts]
+intercom-gateway-ui = "gateway.ui.app:main"
 
 [tool.setuptools.packages.find]
 include = ["gateway*"]
