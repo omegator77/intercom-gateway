@@ -43,10 +43,17 @@ class LineCfg:
 
 
 @dataclass(frozen=True)
+class DebugCfg:
+    record_dir: str | None = None  # diagnostic recording of packets/audio per line (see debugrec.py)
+    record_seconds: float = 90.0
+
+
+@dataclass(frozen=True)
 class Config:
     server: ServerCfg
     audio: AudioCfg
     lines: tuple[LineCfg, ...]
+    debug: DebugCfg = DebugCfg()
 
 
 def _channels(value, field: str, line: str) -> tuple[int, ...]:
@@ -142,7 +149,10 @@ def parse_config(data: Mapping, env: Mapping[str, str] | None = None,
     if not lines:
         raise ConfigError("no enabled [[line]] configured")
 
-    return Config(ServerCfg(url, tuple(ice)), AudioCfg(backend, playout), tuple(lines))
+    dbg = data.get("debug") or {}
+    debug = DebugCfg(str(dbg["record_dir"]) if dbg.get("record_dir") else None,
+                     float(dbg.get("record_seconds", 90.0)))
+    return Config(ServerCfg(url, tuple(ice)), AudioCfg(backend, playout), tuple(lines), debug)
 
 
 def load_config(path: str | Path, env: Mapping[str, str] | None = None,

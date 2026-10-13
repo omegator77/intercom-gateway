@@ -46,7 +46,9 @@ class LineConnection:
         on_pcm: Callable[[np.ndarray], None],
         ice_servers: tuple[str, ...] = (),
         relay_type: str | None = "mixed",  # None = send no relayType, i.e. behave like the browser frontend
+        recorder=None,  # debugrec.Recorder or None
     ):
+        self._recorder = recorder
         self._relay_type = relay_type
         self._http = http  # shared with every other line; never closed here
         self._headers = {"Cookie": f"auth_token={token}"}
@@ -88,6 +90,8 @@ class LineConnection:
         @pc.on("track")
         def _on_track(track):
             if track.kind == "audio":
+                if self._recorder:
+                    self._tap_packets(track)
                 self._pump_task = asyncio.ensure_future(self._pump(track))
 
         @pc.on("connectionstatechange")
@@ -108,6 +112,21 @@ class LineConnection:
         self.connected_ms = (time.monotonic() - t0) * 1000
         return self.session_id
 
+    def _tap_packets(self, track) -> None:
+        """Diagnostics only: log size/timing of every RTP packet the receiver of `track` gets."""
+        rec = self._recorder
+        for receiver in self.pc.getReceivers():
+            if receiver.track is not track:
+                continue
+            original = receiver._handle_rtp_packet
+
+            async def tapped(packet, arrival_time_ms, _orig=original):
+                rec.packet(len(packet.payload), packet.timestamp, packet.sequence_number, packet.ssrc,
+                           packet.payload_type)
+                await _orig(packet, arrival_time_ms)
+
+            receiver._handle_rtp_packet = tapped
+
     async def _pump(self, track) -> None:
         try:
             while True:
@@ -115,6 +134,8 @@ class LineConnection:
                 ch = len(frame.layout.channels)
                 pcm = frame.to_ndarray().reshape(-1, ch).astype(np.float32).mean(axis=1) / 32768.0
                 self.frames_in += 1
+                if self._recorder:
+                    self._recorder.rx(pcm)
                 self._on_pcm(pcm)
         except (MediaStreamError, asyncio.CancelledError):
             pass

@@ -290,6 +290,7 @@ class _BaseLineAudio:
         self.out_level = Level()
         self._in_gain = db_to_lin(cfg.in_gain_db)
         self._out_gain = db_to_lin(cfg.out_gain_db)
+        self.recorder = None  # debugrec.Recorder, set by the line worker when [debug] record_dir is configured
 
     def on_remote_pcm(self, mono: np.ndarray) -> None:
         self.out_buf.write(mono)
@@ -354,6 +355,8 @@ class PortAudioLineAudio(_BaseLineAudio):
                     for c in ochans:
                         outdata[:, c] = mono
                     self.out_level.update(mono)
+                    if self.recorder:
+                        self.recorder.out(mono)
                 except Exception:
                     outdata.fill(0)
                     self._log_cb_error("playback")

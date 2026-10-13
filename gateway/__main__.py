@@ -97,7 +97,7 @@ async def cmd_run(cfg: Config, status_every: float, seconds: float | None = None
         return 3
     loop = asyncio.get_running_loop()
     http = await create_client(cfg.server.url)
-    workers = [LineWorker(l, cfg.server, cfg.audio, make_line_audio, http) for l in cfg.lines]
+    workers = [LineWorker(l, cfg.server, cfg.audio, make_line_audio, http, cfg.debug) for l in cfg.lines]
     if seconds:
         log.info("will stop by itself after %.0f s", seconds)
         loop.call_later(seconds, lambda: [w.stop() for w in workers])

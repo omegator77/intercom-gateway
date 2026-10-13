@@ -7,13 +7,15 @@ import logging
 import random
 import time
 from enum import Enum
+from pathlib import Path
 from typing import Callable
 
 import httpx
 
 from .audio import LineAudio
 from .auth import AuthClient, LoginError
-from .config import AudioCfg, LineCfg, ServerCfg
+from .config import AudioCfg, DebugCfg, LineCfg, ServerCfg
+from .debugrec import Recorder
 from .rtc import LineConnection, SessionError
 
 log = logging.getLogger("gateway.session")
@@ -38,8 +40,10 @@ AudioFactory = Callable[[LineCfg, AudioCfg, asyncio.AbstractEventLoop], LineAudi
 
 class LineWorker:
     def __init__(self, cfg: LineCfg, server: ServerCfg, audio_cfg: AudioCfg, audio_factory: AudioFactory,
-                 http: httpx.AsyncClient):
+                 http: httpx.AsyncClient, debug: DebugCfg = DebugCfg()):
         self.cfg = cfg
+        self._debug = debug
+        self._recorder: Recorder | None = None
         self._server = server
         self._audio_cfg = audio_cfg
         self._audio_factory = audio_factory
@@ -98,8 +102,14 @@ class LineWorker:
         loop = asyncio.get_running_loop()
         audio = self._audio_factory(self.cfg, self._audio_cfg, loop)
         self.audio = audio
+        if self._debug.record_dir:
+            self._recorder = Recorder(Path(self._debug.record_dir), self.cfg.name, self._debug.record_seconds)
+            audio.recorder = self._recorder
+            log.warning("[%s] diagnostic recording is ON (%.0f s) -> %s", self.cfg.name, self._debug.record_seconds,
+                        self._debug.record_dir)
         await audio.start()
-        conn = LineConnection(self._http, token, audio.track, audio.on_remote_pcm, self._server.ice_servers)
+        conn = LineConnection(self._http, token, audio.track, audio.on_remote_pcm, self._server.ice_servers,
+                              recorder=self._recorder)
         self.conn = conn
         try:
             try:
@@ -122,6 +132,9 @@ class LineWorker:
                     log.warning("[%s] closing %s failed: %s", self.cfg.name, what, e)
             self.conn = None
             self.audio = None
+            if self._recorder:
+                self._recorder.finish()
+                self._recorder = None
 
     async def _monitor(self, conn: LineConnection) -> None:
         stop_t = asyncio.ensure_future(self._stop.wait())
@@ -130,6 +143,8 @@ class LineWorker:
         try:
             while True:
                 done, _ = await asyncio.wait({stop_t, dead_t}, timeout=HEARTBEAT_S, return_when=asyncio.FIRST_COMPLETED)
+                if self._recorder and self._recorder.full:
+                    self._recorder.finish()
                 if stop_t in done:
                     return
                 if dead_t in done:
