@@ -16,6 +16,11 @@ playout_ms = 60             # jitter-buffer prefetch; lower = less delay, higher
 # Dante network into this PC (the gateway captures it), "DVS Transmit x-y" is audio going TO the
 # Dante network (the gateway plays the line's mix into it). List names with:  intercom-gateway devices
 
+# relay_type (optional, per line): "ssrc-rewrite" (default) is what the browser frontend uses; the gateway
+# decodes every talker separately and mixes them itself. "mixed" lets the media bridge mix, but its mixer
+# keeps a buzzing tone going after a talker's microphone goes to digital silence (every PTT release in
+# the frontend) - do not use it.
+
 [[line]]
 name = "Regie"
 production_id = "2"

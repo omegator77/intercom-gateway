@@ -109,6 +109,7 @@ class LineWorker:
                         self._debug.record_dir)
         await audio.start()
         conn = LineConnection(self._http, token, audio.track, audio.on_remote_pcm, self._server.ice_servers,
+                              relay_type=None if self.cfg.relay_type == "ssrc-rewrite" else self.cfg.relay_type,
                               recorder=self._recorder)
         self.conn = conn
         try:
@@ -184,5 +185,6 @@ class LineWorker:
             "in_dbfs": round(in_db, 1),
             "out_dbfs": round(out_db, 1),
             "audio": self.audio.stats() if self.audio else {},
+            "rx_lost": self.conn.rx_lost if self.conn else 0,
             "last_error": self.last_error,
         }

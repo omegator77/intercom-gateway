@@ -51,8 +51,10 @@ def test_line_validation():
     base = BASE["line"][0]
     with pytest.raises(ConfigError, match="duplicate"):
         cfg(line=[base, base])
-    with pytest.raises(ConfigError, match="mixed"):
-        cfg(line=[{**base, "relay_type": "ssrc-rewrite"}])
+    with pytest.raises(ConfigError, match="relay_type"):
+        cfg(line=[{**base, "relay_type": "something-else"}])
+    assert cfg(line=[base]).lines[0].relay_type == "ssrc-rewrite"  # browser mode is the default
+    assert cfg(line=[{**base, "relay_type": "mixed"}]).lines[0].relay_type == "mixed"
     with pytest.raises(ConfigError, match="in_gain_db"):
         cfg(line=[{**base, "in_gain_db": 99}])
     with pytest.raises(ConfigError, match="input_channels"):

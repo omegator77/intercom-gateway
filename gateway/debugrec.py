@@ -28,16 +28,16 @@ class Recorder:
         self._rx: list[np.ndarray] = []
         self._rx_t: list[tuple[float, int]] = []
         self._out: list[np.ndarray] = []
-        self._packets: list[tuple[float, int, int, int, int, int]] = []
+        self._packets: list[tuple] = []
         self.done = False
 
     def _live(self) -> bool:
         return not self.done and time.monotonic() - self._t0 < self._seconds
 
-    def packet(self, payload_len: int, rtp_ts: int, seq: int, ssrc: int, pt: int) -> None:
+    def packet(self, payload_len: int, rtp_ts: int, seq: int, ssrc: int, pt: int, crc: int = 0) -> None:
         if self._live():
             with self._lock:
-                self._packets.append((time.monotonic() - self._t0, seq, rtp_ts, payload_len, ssrc, pt))
+                self._packets.append((time.monotonic() - self._t0, seq, rtp_ts, payload_len, ssrc, pt, crc))
 
     def rx(self, pcm: np.ndarray) -> None:
         if self._live():
@@ -73,7 +73,7 @@ class Recorder:
                         w.writeframes(pcm.tobytes())
             with (self._dir / f"{self._stem}_packets.csv").open("w", newline="") as f:
                 wr = csv.writer(f)
-                wr.writerow(["t_s", "seq", "rtp_ts", "payload_bytes", "ssrc", "pt"])
+                wr.writerow(["t_s", "seq", "rtp_ts", "payload_bytes", "ssrc", "pt", "payload_crc32"])
                 wr.writerows((round(t, 4), *rest) for t, *rest in packets)
             with (self._dir / f"{self._stem}_rxframes.csv").open("w", newline="") as f:
                 wr = csv.writer(f)

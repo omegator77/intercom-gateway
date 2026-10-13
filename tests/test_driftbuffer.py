@@ -84,10 +84,24 @@ def test_real_starvation_counts_and_recovers(clock):
         buf.write(np.full(960, 0.1, np.float32))
     for _ in range(12):  # consume more than was delivered, while data is still "recent"
         buf.read(480)
+    assert buf.underruns == 0  # not yet known to be a glitch: the talker may simply have stopped
+    clock.t += 0.1
+    for _ in range(4):  # ...but the data resumes within a quarter second: that was a gap
+        buf.write(np.full(960, 0.1, np.float32))
     assert buf.underruns == 1
+    assert np.any(buf.read(480))
+
+
+def test_end_of_a_talk_spurt_is_not_a_glitch_even_if_speech_resumes_later(clock):
+    buf = DriftBuffer(target_ms=60)
+    for _ in range(5):
+        buf.write(np.full(960, 0.1, np.float32))
+    for _ in range(12):
+        buf.read(480)
+    clock.t += 1.0  # next sentence a second later
     for _ in range(4):
         buf.write(np.full(960, 0.1, np.float32))
-    assert np.any(buf.read(480))
+    assert buf.underruns == 0
 
 
 def test_backlog_after_a_burst_is_worked_off_quickly(clock):

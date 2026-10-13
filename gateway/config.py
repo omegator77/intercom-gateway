@@ -40,6 +40,7 @@ class LineCfg:
     output_channels: tuple[int, ...] = (0, 1)
     out_gain_db: float = 0.0
     tone_hz: float | None = None  # synthetic backend only: tone to send
+    relay_type: str = "ssrc-rewrite"  # what the browser frontend uses; "mixed" = server-side mix (has a known defect, see docs)
 
 
 @dataclass(frozen=True)
@@ -121,9 +122,9 @@ def parse_config(data: Mapping, env: Mapping[str, str] | None = None,
                 raise ConfigError(f"line {name!r}: no password - enter it in the UI (stored in the Windows "
                                   "Credential Manager) or set password_env")
 
-        relay = str(raw.get("relay_type", "mixed"))
-        if relay != "mixed":
-            raise ConfigError(f"line {name!r}: only relay_type 'mixed' is supported by the gateway")
+        relay = str(raw.get("relay_type", "ssrc-rewrite"))
+        if relay not in ("ssrc-rewrite", "mixed"):
+            raise ConfigError(f"line {name!r}: relay_type must be 'ssrc-rewrite' (default) or 'mixed'")
 
         in_dev = raw.get("input_device") or None
         out_dev = raw.get("output_device") or None
@@ -144,6 +145,7 @@ def parse_config(data: Mapping, env: Mapping[str, str] | None = None,
                 output_channels=_channels(raw.get("output_channels", [0, 1]), "output_channels", name),
                 out_gain_db=_gain(raw.get("out_gain_db", 0.0), "out_gain_db", name),
                 tone_hz=float(raw["tone_hz"]) if raw.get("tone_hz") else None,
+                relay_type=relay,
             )
         )
     if not lines:

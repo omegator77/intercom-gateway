@@ -6,12 +6,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import zlib
 from typing import Callable
 
 import httpx
 import numpy as np
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
-from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
+from aiortc.codecs.opus import OpusDecoder
+from aiortc.jitterbuffer import JitterFrame
+from aiortc.mediastreams import MediaStreamTrack
+from aiortc.rtcrtpreceiver import StreamStatistics
 from aiortc.rtcsctptransport import RTCSctpTransport
 
 log = logging.getLogger("gateway.rtc")
@@ -37,15 +41,24 @@ def strip_extra_fingerprints(sdp: str) -> str:
     return "\r\n".join(kept) + "\r\n"
 
 
+class _RxStream:
+    """State of one remote talker (one SSRC)."""
+
+    def __init__(self) -> None:
+        self.decoder = OpusDecoder()
+        self.last_seq: int | None = None
+        self.decode_error_logged = False
+
+
 class LineConnection:
     def __init__(
         self,
         http: httpx.AsyncClient,
         token: str,
         send_track: MediaStreamTrack,
-        on_pcm: Callable[[np.ndarray], None],
+        on_pcm: Callable[[np.ndarray, int], None],  # (mono float32 PCM, ssrc of the talker)
         ice_servers: tuple[str, ...] = (),
-        relay_type: str | None = "mixed",  # None = send no relayType, i.e. behave like the browser frontend
+        relay_type: str | None = None,  # None = send no relayType, i.e. behave like the browser frontend
         recorder=None,  # debugrec.Recorder or None
     ):
         self._recorder = recorder
@@ -59,7 +72,9 @@ class LineConnection:
         self.session_id: str | None = None
         self.dead = asyncio.Event()  # set when the peer connection fails or closes
         self.connected_ms: float | None = None
-        self._pump_task: asyncio.Task | None = None
+        self._rx: dict[int, _RxStream] = {}
+        self.rx_lost = 0
+        self._rx_error_logged = False
         self._connected = asyncio.Event()
         self.frames_in = 0
 
@@ -90,9 +105,7 @@ class LineConnection:
         @pc.on("track")
         def _on_track(track):
             if track.kind == "audio":
-                if self._recorder:
-                    self._tap_packets(track)
-                self._pump_task = asyncio.ensure_future(self._pump(track))
+                self._install_receiver(track)
 
         @pc.on("connectionstatechange")
         async def _on_state():
@@ -112,36 +125,70 @@ class LineConnection:
         self.connected_ms = (time.monotonic() - t0) * 1000
         return self.session_id
 
-    def _tap_packets(self, track) -> None:
-        """Diagnostics only: log size/timing of every RTP packet the receiver of `track` gets."""
-        rec = self._recorder
+    def _install_receiver(self, track) -> None:
+        """Take over RTP reception for `track`'s receiver. aiortc's receiver has ONE jitter buffer and ONE
+        decoder per m-line, but the media bridge's default (browser) mode forwards several talkers as
+        separate SSRCs on that single m-line. So demultiplex by SSRC here: every talker gets its own
+        Opus decoder and is played out by its own buffer (audio.MixedPlayout sums them), like a browser."""
         for receiver in self.pc.getReceivers():
             if receiver.track is not track:
                 continue
-            original = receiver._handle_rtp_packet
 
-            async def tapped(packet, arrival_time_ms, _orig=original):
-                rec.packet(len(packet.payload), packet.timestamp, packet.sequence_number, packet.ssrc,
-                           packet.payload_type)
-                await _orig(packet, arrival_time_ms)
+            async def handler(packet, arrival_time_ms, _receiver=receiver):
+                try:
+                    self._on_rtp(_receiver, packet)
+                except Exception:  # an exception here would end aiortc's whole DTLS receive loop
+                    if not self._rx_error_logged:
+                        self._rx_error_logged = True
+                        log.exception("processing an RTP packet failed (further errors are not logged)")
 
-            receiver._handle_rtp_packet = tapped
+            receiver._handle_rtp_packet = handler
 
-    async def _pump(self, track) -> None:
-        try:
-            while True:
-                frame = await track.recv()
-                ch = len(frame.layout.channels)
-                pcm = frame.to_ndarray().reshape(-1, ch).astype(np.float32).mean(axis=1) / 32768.0
-                self.frames_in += 1
-                if self._recorder:
-                    self._recorder.rx(pcm)
-                self._on_pcm(pcm)
-        except (MediaStreamError, asyncio.CancelledError):
-            pass
+    def _on_rtp(self, receiver, packet) -> None:
+        rec = self._recorder
+        payload = packet.payload
+        if rec:
+            rec.packet(len(payload), packet.timestamp, packet.sequence_number, packet.ssrc, packet.payload_type,
+                       zlib.crc32(payload))
+        if not payload:
+            return
+        codec = receiver._RTCRtpReceiver__codecs.get(packet.payload_type)  # name-mangled private attribute
+        if codec is None or codec.mimeType.lower() != "audio/opus":
+            return
+        try:  # keep RTCP receiver reports working like aiortc's own handler does
+            stats = receiver._RTCRtpReceiver__remote_streams
+            if packet.ssrc not in stats:
+                stats[packet.ssrc] = StreamStatistics(codec.clockRate)
+            stats[packet.ssrc].add(packet)
         except Exception:
-            log.exception("receive pump failed")
-            self.dead.set()
+            pass
+
+        stream = self._rx.get(packet.ssrc)
+        if stream is None:
+            stream = self._rx[packet.ssrc] = _RxStream()
+            log.info("receiving a new stream (ssrc %d), %d active", packet.ssrc, len(self._rx))
+        if stream.last_seq is not None:
+            gap = (packet.sequence_number - stream.last_seq) & 0xFFFF
+            if gap == 0 or gap >= 0x8000:
+                return  # duplicate or late: the playout buffer cannot use it any more
+            if gap > 1:
+                self.rx_lost += gap - 1
+        stream.last_seq = packet.sequence_number
+        try:
+            frames = stream.decoder.decode(JitterFrame(payload, packet.timestamp))
+        except Exception:
+            if not stream.decode_error_logged:
+                stream.decode_error_logged = True
+                log.exception("decoding a packet of ssrc %d failed (further errors on this stream are not logged)",
+                              packet.ssrc)
+            return
+        for frame in frames:
+            ch = len(frame.layout.channels)
+            pcm = frame.to_ndarray().reshape(-1, ch).astype(np.float32).mean(axis=1) / 32768.0
+            self.frames_in += 1
+            if rec:
+                rec.rx(pcm)
+            self._on_pcm(pcm, packet.ssrc)
 
     async def heartbeat(self) -> int:
         r = await self._http.get(f"{API}/heartbeat/{self.session_id}", headers=self._headers)
@@ -155,8 +202,6 @@ class LineConnection:
                     self._http.delete(f"{API}/session/{self.session_id}", headers=self._headers), 5)
             except Exception:
                 pass  # the server expires silent sessions on its own
-        if self._pump_task:
-            self._pump_task.cancel()
         try:
             await asyncio.wait_for(self.pc.close(), 5)
         except Exception:

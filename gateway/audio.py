@@ -96,7 +96,8 @@ class DriftBuffer:
         self._fill_avg: float | None = None
         self._last_write = 0.0
         self._lock = threading.Lock()
-        self.underruns = 0  # starvation while data was flowing (not counted when the line is simply silent)
+        self._starved_at: float | None = None
+        self.underruns = 0  # starvation followed by more data within 250 ms (a gap), not the end of a talk spurt
         self.overruns = 0
         self.ratio = 1.0
 
@@ -116,6 +117,10 @@ class DriftBuffer:
             self._buf[(np.arange(n) + self._w) % self._cap] = x
             self._w += n
             self._last_write = time.monotonic()
+            if self._starved_at is not None:
+                if self._last_write - self._starved_at < 0.25:
+                    self.underruns += 1
+                self._starved_at = None
             if self._w - self._r > self._max:  # consumer stalled or clock far off: jump back to target
                 self._r = self._w - self._target
                 self.overruns += 1
@@ -141,7 +146,7 @@ class DriftBuffer:
 
             if self._r + ratio * (n - 1) + 1 >= self._w:  # not enough data for a full block
                 if time.monotonic() - self._last_write < 0.2:
-                    self.underruns += 1  # data was flowing and ran dry -> a real glitch
+                    self._starved_at = time.monotonic()  # data was flowing and ran dry: a glitch if more follows soon
                 self._buffering = True
                 self._fill_avg = None
                 return out
@@ -155,6 +160,70 @@ class DriftBuffer:
             self._r += ratio * n
             self.ratio = ratio
             return out
+
+
+class MixedPlayout:
+    """Playout for a line with several simultaneous talkers: one DriftBuffer per remote stream (SSRC), each
+    resampled to the sound card clock on its own, summed on read. Streams that went quiet are dropped, so a
+    new talker always starts with a fresh prefetch."""
+
+    IDLE_DROP_S = 3.0
+    MAX_STREAMS = 16
+
+    def __init__(self, target_ms: int = 60):
+        self._target_ms = target_ms
+        self._streams: dict[int, DriftBuffer] = {}
+        self._lock = threading.Lock()
+        self._closed_underruns = 0
+        self._closed_overruns = 0
+
+    def write(self, x: np.ndarray, key: int = 0) -> None:
+        with self._lock:
+            b = self._streams.get(key)
+            if b is None:
+                if len(self._streams) >= self.MAX_STREAMS:
+                    return
+                b = self._streams[key] = DriftBuffer(target_ms=self._target_ms)
+        b.write(x)
+
+    def read(self, n: int) -> np.ndarray:
+        with self._lock:
+            items = list(self._streams.items())
+        out = np.zeros(n, np.float32)
+        now = time.monotonic()
+        for key, b in items:
+            out += b.read(n)
+            if now - b._last_write > self.IDLE_DROP_S:
+                with self._lock:
+                    if self._streams.get(key) is b:
+                        del self._streams[key]
+                        self._closed_underruns += b.underruns
+                        self._closed_overruns += b.overruns
+        return out
+
+    @property
+    def streams(self) -> int:
+        return len(self._streams)
+
+    @property
+    def fill_ms(self) -> float:
+        with self._lock:
+            return max((b.fill_ms for b in self._streams.values()), default=0.0)
+
+    @property
+    def ratio(self) -> float:
+        with self._lock:
+            return next(iter(self._streams.values())).ratio if self._streams else 1.0
+
+    @property
+    def underruns(self) -> int:
+        with self._lock:
+            return self._closed_underruns + sum(b.underruns for b in self._streams.values())
+
+    @property
+    def overruns(self) -> int:
+        with self._lock:
+            return self._closed_overruns + sum(b.overruns for b in self._streams.values())
 
 
 class DeviceInputTrack(MediaStreamTrack):
@@ -247,7 +316,7 @@ class DeviceInputTrack(MediaStreamTrack):
 class LineAudio(Protocol):
     track: DeviceInputTrack
 
-    def on_remote_pcm(self, mono: np.ndarray) -> None: ...
+    def on_remote_pcm(self, mono: np.ndarray, key: int = 0) -> None: ...
     async def start(self) -> None: ...
     async def stop(self) -> None: ...
     def levels(self) -> tuple[float, float]: ...
@@ -286,20 +355,21 @@ class _BaseLineAudio:
     def __init__(self, cfg: LineCfg, audio: AudioCfg, loop: asyncio.AbstractEventLoop):
         self.cfg = cfg
         self.track = DeviceInputTrack(loop)
-        self.out_buf = DriftBuffer(target_ms=audio.playout_ms)
+        self.out_buf = MixedPlayout(target_ms=audio.playout_ms)
         self.out_level = Level()
         self._in_gain = db_to_lin(cfg.in_gain_db)
         self._out_gain = db_to_lin(cfg.out_gain_db)
         self.recorder = None  # debugrec.Recorder, set by the line worker when [debug] record_dir is configured
 
-    def on_remote_pcm(self, mono: np.ndarray) -> None:
-        self.out_buf.write(mono)
+    def on_remote_pcm(self, mono: np.ndarray, key: int = 0) -> None:
+        self.out_buf.write(mono, key)
 
     def levels(self) -> tuple[float, float]:
         return self.track.level.dbfs, self.out_level.dbfs
 
     def stats(self) -> dict:
         return {
+            "talkers": self.out_buf.streams,
             "fill_ms": round(self.out_buf.fill_ms, 1),
             "ratio": round(self.out_buf.ratio, 5),
             "underruns": self.out_buf.underruns,
