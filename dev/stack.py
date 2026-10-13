@@ -5,6 +5,7 @@
     python dev/stack.py setup    create admin, a production with two lines and test accounts
     python dev/stack.py down     stop everything and delete the throwaway data
     python dev/stack.py status
+    python dev/stack.py manager main|branch   restart the manager from production's code or the spike branch
 """
 from __future__ import annotations
 
@@ -88,21 +89,55 @@ def up() -> None:
 
     jwt = secrets.token_urlsafe(24)
     (STATE_DIR / "jwt.secret").write_text(jwt)
+    start_manager(jwt)
+    print("next: python dev/stack.py setup")
+
+
+def start_manager(jwt: str) -> None:
     log = open(STATE_DIR / "manager.log", "w")
     flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0  # DETACHED_PROCESS | NEW_PROCESS_GROUP
     p = subprocess.Popen([NODE, "node_modules/ts-node/dist/bin.js", "-T", "src/server.ts"], cwd=MANAGER_DIR,
                          env=manager_env(jwt), stdout=log, stderr=log, creationflags=flags)
     PIDFILE.write_text(str(p.pid))
-
     for _ in range(90):
         try:
             if httpx.get(f"{BASE}{API}/auth/me", timeout=2).status_code == 401:
-                print(f"manager up on {BASE} (pid {p.pid}); next: python dev/stack.py setup")
+                print(f"manager up on {BASE} (pid {p.pid}) running {git_rev()}")
                 return
         except httpx.HTTPError:
             pass
         time.sleep(1)
     sys.exit(f"manager did not come up, see {STATE_DIR / 'manager.log'}")
+
+
+def git_rev() -> str:
+    out = subprocess.run(["git", "log", "--oneline", "-1"], cwd=MANAGER_DIR, capture_output=True, text=True).stdout.strip()
+    return out or "?"
+
+
+def stop_manager() -> None:
+    if PIDFILE.exists():
+        pid = PIDFILE.read_text().strip()
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", pid, "/T", "/F"], capture_output=True)
+        else:
+            subprocess.run(["kill", pid], capture_output=True)
+        PIDFILE.unlink()
+        time.sleep(1)
+
+
+def switch(ref: str) -> None:
+    """Restart the manager from `main` (what production runs today) or from the spike branch, on the
+    same SMB + Mongo. Only the throwaway clone is touched; fetching reads your real repo, nothing more."""
+    stop_manager()
+    if ref == "main":
+        # The clone is --single-branch, so a fetch does not create origin/main; use FETCH_HEAD.
+        sh(["git", "fetch", "--quiet", "origin", "main"], cwd=MANAGER_DIR)
+        sh(["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"], cwd=MANAGER_DIR)
+    else:
+        sh(["git", "fetch", "--quiet", "origin", BRANCH], cwd=MANAGER_DIR)  # pick up new commits on the branch
+        sh(["git", "checkout", "--quiet", "-B", BRANCH, "FETCH_HEAD"], cwd=MANAGER_DIR)
+    start_manager((STATE_DIR / "jwt.secret").read_text())
 
 
 def setup() -> None:
@@ -131,17 +166,25 @@ def setup() -> None:
                           json={"username": name, "password": pw, "displayName": name}).raise_for_status()
             users[name] = {"username": name, "password": pw}
     STATE.write_text(json.dumps({"base": BASE, "productionId": pid, "lines": lines, "users": users}, indent=2))
+    write_local_config()
     print(f"setup ok: production {pid}, lines {lines}, accounts {list(users)}  (state: dev/.state/state.json)")
 
 
+def write_local_config() -> None:
+    """Throwaway gateway config (synthetic audio, local stack) used by dev/smoke_cli.py."""
+    st = json.loads(STATE.read_text())
+    blocks = []
+    for who, line, tone in (("gw_regie", "Regie", 440), ("gw_technik", "Technik", 660)):
+        u = st["users"][who]
+        blocks.append(
+            f'[[line]]\nname = "{line}"\nproduction_id = "{st["productionId"]}"\nline_id = "{st["lines"][line]}"\n'
+            f'username = "{u["username"]}"\npassword = "{u["password"]}"\ntone_hz = {tone}\n')
+    (STATE_DIR / "gateway.local.toml").write_text(
+        f'[server]\nurl = "{st["base"]}"\n\n[audio]\nbackend = "synthetic"\n\n' + "\n".join(blocks))
+
+
 def down() -> None:
-    if PIDFILE.exists():
-        pid = PIDFILE.read_text().strip()
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", pid, "/T", "/F"], capture_output=True)
-        else:
-            subprocess.run(["kill", pid], capture_output=True)
-        PIDFILE.unlink()
+    stop_manager()
     subprocess.run(["docker", "rm", "-f", "-v", *CONTAINERS], capture_output=True)
     shutil.rmtree(STATE_DIR, ignore_errors=True)
     print("stack stopped, throwaway data deleted (the intercom-manager.spike clone is kept; delete it yourself if unwanted)")
@@ -156,5 +199,10 @@ def status() -> None:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["up", "setup", "down", "status"])
-    {"up": up, "setup": setup, "down": down, "status": status}[ap.parse_args().cmd]()
+    ap.add_argument("cmd", choices=["up", "setup", "down", "status", "manager", "config"])
+    ap.add_argument("ref", nargs="?", choices=["main", "branch"], help="for 'manager': which code to run")
+    a = ap.parse_args()
+    if a.cmd == "manager":
+        switch(a.ref or "branch")
+    else:
+        {"up": up, "setup": setup, "down": down, "status": status, "config": write_local_config}[a.cmd]()

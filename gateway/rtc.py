@@ -45,7 +45,9 @@ class LineConnection:
         send_track: MediaStreamTrack,
         on_pcm: Callable[[np.ndarray], None],
         ice_servers: tuple[str, ...] = (),
+        relay_type: str | None = "mixed",  # None = send no relayType, i.e. behave like the browser frontend
     ):
+        self._relay_type = relay_type
         self._http = http  # shared with every other line; never closed here
         self._headers = {"Cookie": f"auth_token={token}"}
         self._track = send_track
@@ -69,15 +71,15 @@ class LineConnection:
 
     async def _connect(self, production_id: str, line_id: str, username: str) -> str:
         t0 = time.monotonic()
-        r = await self._http.post(
-            f"{API}/session",
-            json={"productionId": production_id, "lineId": line_id, "username": username, "relayType": "mixed"},
-            headers=self._headers,
-        )
+        body = {"productionId": production_id, "lineId": line_id, "username": username}
+        if self._relay_type:
+            body["relayType"] = self._relay_type
+        r = await self._http.post(f"{API}/session", json=body, headers=self._headers)
         if r.status_code != 201:
             raise SessionError(f"POST /session -> HTTP {r.status_code}: {r.text[:200]}", r.status_code)
         data = r.json()
         self.session_id = data["sessionId"]
+        self.offer_sdp = data["sdp"]  # kept for diagnostics and the compatibility check
 
         pc = self.pc
         pc.addTrack(self._track)
