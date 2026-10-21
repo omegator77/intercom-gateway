@@ -12,11 +12,11 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-                               QPushButton, QSpinBox, QVBoxLayout)
+                               QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
 from .. import credentials, tomlio
-from ..auth import AuthClient, LoginError
-from ..http import create_client
+from ..auth import LoginError
+from ..lines import AvailableLine, LinesError, fetch_available_lines
 from . import devices
 from .style import muted
 
@@ -68,6 +68,7 @@ class DeviceCombo(QComboBox):
 
 class LineDialog(QDialog):
     loginResult = Signal(str, bool)
+    linesLoaded = Signal(object)  # list[AvailableLine]
 
     def __init__(self, line: dict, server_url: str, backend: str, inputs, outputs, stored_pw: bool,
                  parent=None) -> None:
@@ -83,6 +84,7 @@ class LineDialog(QDialog):
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.name = QLineEdit(line.get("name", ""))
         self.name.setPlaceholderText("z. B. Regie")
+        self._auto_name = ""  # the name taken from the list, so a later pick may replace it but never a typed one
         self.link = QLineEdit()
         self.link.setPlaceholderText("Link der Leitung einfügen, z. B. …/production/4/line/1")
         self.prod = QLineEdit(str(line.get("production_id", "")))
@@ -93,6 +95,19 @@ class LineDialog(QDialog):
         ids.addWidget(self.prod)
         ids.addWidget(QLabel("Leitung"))
         ids.addWidget(self.line_id)
+        self.line_pick = QComboBox()
+        self.line_pick.setMinimumWidth(320)
+        self.line_pick.currentIndexChanged.connect(self._picked)
+        self._fill_line_pick([])
+        self.btn_manual = QPushButton("Manuell eintragen …")
+        self.btn_manual.setCheckable(True)
+        self.manual = QWidget()
+        manual_form = QFormLayout(self.manual)
+        manual_form.setContentsMargins(0, 0, 0, 0)
+        manual_form.addRow("Link", self.link)
+        manual_form.addRow("", ids)
+        self.manual.setVisible(False)
+        self.btn_manual.toggled.connect(self.manual.setVisible)
         self.user = QLineEdit(line.get("username", ""))
         self.pw = QLineEdit()
         self.pw.setEchoMode(QLineEdit.Password)
@@ -105,19 +120,21 @@ class LineDialog(QDialog):
         else:
             self.pw.setPlaceholderText("Passwort dieses Benutzers")
         test_row = QHBoxLayout()
-        self.btn_test = QPushButton("Anmeldung testen")
+        self.btn_test = QPushButton("Anmelden und Leitungen laden")
         self.test_result = QLabel()
         self.test_result.setWordWrap(True)
         test_row.addWidget(self.btn_test)
         test_row.addWidget(self.test_result, 1)
         self.btn_test.clicked.connect(self._test_login)
         self.loginResult.connect(self._show_login)
-        form.addRow("Name", self.name)
-        form.addRow("Link", self.link)
-        form.addRow("", ids)
+        self.linesLoaded.connect(self._show_lines)
         form.addRow("Benutzer", self.user)
         form.addRow("Passwort", self.pw)
         form.addRow("", test_row)
+        form.addRow("Leitung", self.line_pick)
+        form.addRow("Name", self.name)
+        form.addRow("", self.btn_manual)
+        form.addRow(self.manual)
 
         self.synthetic = backend == "synthetic"
         box_in = QGroupBox("Eingang — Audio aus dem Dante-Netz in die Leitung")
@@ -139,6 +156,7 @@ class LineDialog(QDialog):
         f_out.addRow("Gerät", self.out_dev)
         f_out.addRow("Kanäle", self.out_ch)
         f_out.addRow("Verstärkung", self.out_gain)
+        self._boxes = (box_in, box_out)  # not in the layout in test mode: without this reference Qt deletes them
 
         self.tone = None
         extra = QVBoxLayout()
@@ -202,25 +220,66 @@ class LineDialog(QDialog):
             self._show_login("Server, Benutzer und Passwort werden zum Testen gebraucht.", False)
             return
         self.btn_test.setEnabled(False)
-        self.test_result.setText("Teste …")
-
-        async def go() -> None:
-            http = await create_client(url)
-            try:
-                await AuthClient(http, user, pw).token()
-            finally:
-                await http.aclose()
+        self.test_result.setText("Melde an …")
 
         def work() -> None:
             try:
-                asyncio.run(go())
-                self.loginResult.emit("Anmeldung erfolgreich.", True)
-            except LoginError as e:
+                found = asyncio.run(fetch_available_lines(url, user, pw))
+            except (LoginError, LinesError) as e:
                 self.loginResult.emit(str(e), False)
+                return
             except Exception as e:
                 self.loginResult.emit(f"{type(e).__name__}: {e}", False)
+                return
+            self.linesLoaded.emit(found)
+            n = len(found)
+            self.loginResult.emit(
+                f"Angemeldet — {n} Leitung{'en' if n != 1 else ''} verfügbar." if n
+                else "Angemeldet, aber diesem Benutzer ist keine Leitung zugewiesen.", True)
 
         threading.Thread(target=work, daemon=True).start()
+
+    # -- line list
+
+    def _fill_line_pick(self, lines: list[AvailableLine]) -> None:
+        """Items carry (production_id, line_id, line_name). Without a list the only item is the configured line
+        (or a hint); with one, the configured line stays selected, even if the account no longer offers it."""
+        cur = (self.prod.text().strip(), self.line_id.text().strip())
+        pick = self.line_pick
+        pick.blockSignals(True)
+        pick.clear()
+        if not lines:
+            if all(cur):
+                pick.addItem(f"Produktion {cur[0]} / Leitung {cur[1]}  (aktuell)", (*cur, ""))
+            else:
+                pick.addItem("Erst anmelden, dann Leitung wählen …", None)
+        else:
+            pick.addItem("— Leitung wählen —", None)
+            for ln in lines:
+                pick.addItem(ln.label, (ln.production_id, ln.line_id, ln.line_name))
+            if all(cur):
+                for i in range(1, pick.count()):
+                    if tuple(pick.itemData(i)[:2]) == cur:
+                        pick.setCurrentIndex(i)
+                        break
+                else:
+                    pick.insertItem(1, f"Produktion {cur[0]} / Leitung {cur[1]}  (nicht in der Liste)", (*cur, ""))
+                    pick.setCurrentIndex(1)
+        pick.blockSignals(False)
+
+    def _show_lines(self, lines: list[AvailableLine]) -> None:
+        self._fill_line_pick(lines)
+
+    def _picked(self, index: int) -> None:
+        data = self.line_pick.itemData(index)
+        if not data:
+            return
+        prod, lid, name = data
+        self.prod.setText(prod)
+        self.line_id.setText(lid)
+        if name and (not self.name.text().strip() or self.name.text() == self._auto_name):
+            self.name.setText(name)
+            self._auto_name = name
 
     def _show_login(self, msg: str, ok: bool) -> None:
         self.btn_test.setEnabled(True)
@@ -244,7 +303,8 @@ class LineDialog(QDialog):
             raise ValueError("Die Leitung braucht einen Namen.")
         prod, lid, user = self.prod.text().strip(), self.line_id.text().strip(), self.user.text().strip()
         if not prod or not lid:
-            raise ValueError("Produktion und Leitung fehlen — am einfachsten den Link der Leitung einfügen.")
+            raise ValueError("Keine Leitung gewählt — erst anmelden und eine Leitung aus der Liste wählen "
+                             "(oder unter „Manuell eintragen“ angeben).")
         if not user:
             raise ValueError("Der Benutzername fehlt.")
         line = copy.deepcopy(self._orig)

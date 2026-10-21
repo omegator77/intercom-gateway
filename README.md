@@ -54,6 +54,14 @@ pip install -e ".[ui]"      # ohne Oberfläche: pip install -e .
    intercom-gateway check -c gateway.toml
    ```
 
+### Leitungen in der Oberfläche auswählen
+
+In den Einstellungen der Oberfläche trägt man pro Leitung Benutzer und Passwort ein und klickt auf
+„Anmelden und Leitungen laden“. Danach zeigt das Dropdown alle Leitungen, die dieser Account sehen darf
+(Production › Leitung). Production- und Leitungsnummern müssen nicht mehr abgetippt werden. Normale Accounts sehen nur
+Productions, in denen sie Mitglied sind, Super-Admins alle. Der Name der Leitung wird übernommen und kann
+überschrieben werden. Unter „Manuell eintragen“ lassen sich Link oder Nummern weiterhin von Hand angeben.
+
 ## Betrieb
 
 ```powershell
