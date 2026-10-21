@@ -2,7 +2,7 @@
 # in the environment of the task/service that starts the gateway.
 
 [server]
-url = "https://intercom.example.com"
+url = "https://intercom.example.com"   # address of your Open Intercom manager
 # ice_servers = []          # none needed when the media bridge has a public address
 
 [audio]
