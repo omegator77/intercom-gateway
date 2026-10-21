@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 ui = ["PySide6-Essentials>=6.7", "keyring>=24"]
 dev = ["pytest>=8"]
+build = ["pyinstaller>=6.10"]
 
 [project.scripts]
 intercom-gateway = "gateway.__main__:main"

@@ -29,6 +29,15 @@ def _python_exe() -> str:
     return str(exe)
 
 
+def gateway_command(config_path: Path, home: Path) -> list[str]:
+    """Command line of the detached gateway process. A packaged build has no `python -m gateway`: the
+    executable starts itself again in headless mode (see packaging/gui_entry.py)."""
+    args = ["-c", str(config_path), "--state-dir", str(home), "--log-file", str(default_log(home))]
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--gateway-run", *args]
+    return [_python_exe(), "-m", "gateway", "run", *args]
+
+
 def start(config_path: Path, home: Path, wait_s: float = 20.0) -> dict:
     """Validate the config, spawn `gateway run` detached and wait until its control channel answers.
     Returns the control info. Raises LaunchError with a message fit to show the user."""
@@ -39,8 +48,7 @@ def start(config_path: Path, home: Path, wait_s: float = 20.0) -> dict:
     except ConfigError as e:
         raise LaunchError(str(e)) from None
     home.mkdir(parents=True, exist_ok=True)
-    cmd = [_python_exe(), "-m", "gateway", "run", "-c", str(config_path), "--state-dir", str(home),
-           "--log-file", str(default_log(home))]
+    cmd = gateway_command(config_path, home)
     err = (home / "gateway.stderr").open("ab")
     kwargs = dict(stdin=subprocess.DEVNULL, stdout=err, stderr=err, cwd=str(home), close_fds=True)
     flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP

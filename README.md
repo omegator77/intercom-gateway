@@ -18,7 +18,7 @@ Frühe Version (0.1.0). Lauffähig sind:
 
 - das Gateway ohne Oberfläche (`intercom-gateway`)
 - eine Desktop-Oberfläche (`intercom-gateway-ui`, PySide6) mit Start, Stopp und Pegelanzeige
-- ein Windows-Installer ist **noch nicht** vorhanden
+- ein Windows-Installer, der mit `build.ps1` gebaut wird (siehe unten, noch nicht als fertiger Download veröffentlicht)
 
 Getestet wurde unter Windows mit Dante Virtual Soundcard. Das Gateway nutzt ausschließlich
 **WASAPI**-Geräte. Ein Interface, das nur ASIO anbietet, taucht nicht auf.
@@ -76,6 +76,32 @@ Zustandsdateien und Log liegen unter `%LOCALAPPDATA%\intercom-gateway`
 | `relay_type` | `ssrc-rewrite` (Standard) oder `mixed`. `mixed` wird nicht empfohlen. |
 
 Die Line überträgt Mono mit den Opus-Einstellungen des Intercom-Servers (auf Sprache ausgelegt).
+
+## Installer bauen
+
+Der Installer packt die App mit PyInstaller und Inno Setup. Auf dem Zielrechner wird kein Python gebraucht.
+Er installiert pro Benutzer, ohne Administratorrechte. Einstellungen und Passwörter bleiben beim Deinstallieren erhalten.
+
+Voraussetzungen auf dem Build-Rechner: Windows, Python 3.11 oder neuer und
+[Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`).
+
+```powershell
+pip install -e ".[ui,dev,build]"
+.\build.ps1                  # Tests, PyInstaller, Smoke-Test, Installer
+.\build.ps1 -NoInstaller     # nur der App-Ordner dist\IntercomGateway
+```
+
+Ergebnis: `dist\installer\intercom-gateway-<version>-setup.exe`. Die Version kommt aus `gateway/__init__.py`.
+
+Der App-Ordner enthält zwei Programme:
+
+| Datei | Zweck |
+|---|---|
+| `IntercomGateway.exe` | Oberfläche ohne Konsolenfenster. Sie startet sich für den Hintergrundbetrieb selbst mit `--gateway-run`. |
+| `intercom-gateway.exe` | Kommandozeile: `devices`, `check`, `run`, `status`, `stop`. |
+
+Bei der Installation kann man optional eine Desktop-Verknüpfung und den Start der Oberfläche beim Anmelden wählen.
+Das Gateway selbst startet man weiterhin in der Oberfläche.
 
 ## Tests
 

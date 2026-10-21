@@ -8,3 +8,5 @@ gateway.toml
 gateway.*.toml
 dev/.state/
 *.egg-info/
+build/
+dist/
