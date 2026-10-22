@@ -396,7 +396,7 @@ def test_a_card_shows_programme_and_dimmed(fakes, tmp_path):
     card.refresh({**base, "program": True, "dimmed": False})
     assert not card.tag.isHidden() and card.tag.text() == "Programm"
     card.refresh({**base, "program": True, "dimmed": True})
-    assert card.tag.text() == "Programm · gedimmt"
+    assert card.tag.text() == "↓ gedimmt"
     card.show_off()
     assert card.tag.isHidden()
 

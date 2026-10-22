@@ -55,6 +55,7 @@ class ClientLine:
     ptt_key: str | None = None  # talk while held
     latch_key: str | None = None  # toggle "keep talking"
     autoconnect: bool = True  # connect this line when the client starts (switching a line off on its card is remembered)
+    collapsed: bool = False  # its card is folded to one row (remembered)
 
 
 @dataclass(frozen=True)
@@ -178,9 +179,12 @@ def parse_client_config(data: Mapping, env: Mapping[str, str] | None = None,
         auto = raw.get("autoconnect", True)
         if not isinstance(auto, bool):
             raise ConfigError(f"line {name!r}: autoconnect must be true or false")
+        folded = raw.get("collapsed", False)
+        if not isinstance(folded, bool):
+            raise ConfigError(f"line {name!r}: collapsed must be true or false")
         lines.append(ClientLine(name, str(raw["production_id"]), str(raw["line_id"]), vol,
                                 _key(raw.get("ptt_key"), f"line {name!r}: ptt_key"),
-                                _key(raw.get("latch_key"), f"line {name!r}: latch_key"), auto))
+                                _key(raw.get("latch_key"), f"line {name!r}: latch_key"), auto, folded))
     if not lines:
         raise ConfigError("no [[line]] configured")
 

@@ -91,7 +91,7 @@ def test_window_shows_a_card_per_line_and_the_buttons_drive_the_engine(app, tmp_
         assert list(win.cards) == ["Regie", "Technik"]
         assert "verbunden seit 0:01:05" in regie.since.text()
         assert "Ben" in regie.people.text() and "<b>" not in regie.people.text().replace("&lt;b&gt;", "")
-        assert "[F1]" in regie.talk.text() and "[SHIFT+F1]" in regie.latch.text()
+        assert "[F1]" in regie.talk.text() and "[⇧F1]" in regie.latch.text()
         assert regie.volume.value() == 90 and regie.volume_text.text() == "90 %"
         eng = win.engine
 
@@ -154,7 +154,9 @@ def test_a_missing_device_is_shown_and_the_button_works_again(app, tmp_path):
 
 
 def test_key_hint():
-    assert key_hint(None) == "" and key_hint("ctrl+f1") == "  [CTRL+F1]"
+    assert key_hint(None) == "" and key_hint("f1") == "  [F1]"
+    assert key_hint("ctrl+f1") == "  [Strg+F1]" and key_hint("shift+f2") == "  [⇧F2]"
+    assert key_hint("ctrl+alt+m") == "  [Strg+Alt+M]"
 
 
 # ---------------------------------------------------------------- settings
@@ -565,10 +567,11 @@ def test_a_line_that_was_left_off_is_not_connected_at_the_start_but_can_be_switc
         assert pump(app, until=lambda: eng.snapshot()["lines"][0]["state"] == "connected")
         r, t = eng.snapshot()["lines"]
         assert (t["name"], t["enabled"], t["state"]) == ("Technik", False, "off")
-        assert [l.control.name for l in eng.hub._lines] == ["Regie"] and "Technik" not in eng.workers
+        assert pump(app, until=lambda: [l.control.name for l in eng.hub._lines] == ["Regie"])
+        assert "Technik" not in eng.workers
         eng.connect_line("Technik")
         assert pump(app, until=lambda: eng.snapshot()["lines"][1]["state"] == "connected")
-        assert len(eng.hub._lines) == 2
+        assert pump(app, until=lambda: len(eng.hub._lines) == 2)
     finally:
         eng.stop()
 
@@ -669,3 +672,173 @@ def test_new_lines_start_connected(app, tmp_path):
     d.line_pick.setCurrentIndex(0)
     d._add_picked()
     assert d._row_values(2)[4] is True
+
+
+# ---------------------------------------------------------------- compact cards: fold, highlight, many lines
+
+def write_many(path, n, **extra):
+    lines = [{"name": f"Leitung {i + 1}", "production_id": "4", "line_id": str(i + 1)} for i in range(n)]
+    tomlio.save(path, {"server": {"url": "https://intercom.example", "username": "anna"},
+                       "audio": {"backend": "synthetic"}, "line": lines, **extra})
+
+
+def state(**over):
+    base = {"state": "connected", "uptime_s": 1, "participants": [{"name": "Ben", "active": True, "whip": False}],
+            "talking": False, "held": False, "latched": False, "listen_mute": False, "volume_pct": 100,
+            "in_dbfs": -120.0, "out_dbfs": -30.0, "ptt_key": "f1", "latch_key": "shift+f1", "last_error": None,
+            "audio": {}, "enabled": True, "program": False, "dimmed": False}
+    return {**base, **over}
+
+
+class StubEngine:
+    def toggle_line(self, name): ...
+    def ptt(self, name, down): ...
+    def toggle_latch(self, name): ...
+    def set_listen_mute(self, name, mute): ...
+    def set_volume(self, name, pct): ...
+
+
+def test_a_card_folds_to_one_row_and_keeps_the_controls(app):
+    from intercom_client.ui.window import LineCard
+
+    card = LineCard(StubEngine(), "Regie", "f1", None)
+    card.show()
+    card.refresh(state())
+    app.processEvents()
+    seen = []
+    card.collapsedChanged.connect(seen.append)
+    open_height = card.sizeHint().height()
+    assert not card.collapsed and not card.details.isHidden()
+
+    card.arrow.click()
+    app.processEvents()
+    assert card.collapsed and card.details.isHidden() and seen == [True]
+    assert card.sizeHint().height() < open_height - 25  # clearly smaller
+    assert card.sizeHint().height() < 70  # one row
+    for w in (card.talk, card.latch, card.listen, card.volume, card.out_meter, card.connect_btn):
+        assert not w.isHidden()  # everything needed while working stays in the row
+    card.set_collapsed(True)  # no change: no signal
+    assert seen == [True]
+    card.arrow.click()
+    assert not card.collapsed and not card.details.isHidden() and seen == [True, False]
+
+
+def test_a_card_that_starts_folded_is_folded(app):
+    from intercom_client.ui.window import LineCard
+
+    card = LineCard(StubEngine(), "Regie", "f1", None, collapsed=True)
+    assert card.collapsed and card.details.isHidden()
+
+
+def test_the_card_frame_shows_that_you_are_transmitting(app):
+    from intercom_client.ui.window import BORDER_LATCHED, BORDER_TALKING, LineCard
+
+    card = LineCard(StubEngine(), "Regie", "f1", None)
+    card.refresh(state())
+    assert card.styleSheet() == ""
+    card.refresh(state(held=True, talking=True))
+    assert BORDER_TALKING in card.styleSheet() and "Sendet" in card.talk.text()
+    card.refresh(state(latched=True, talking=True))
+    assert BORDER_LATCHED in card.styleSheet() and card.talk.text().startswith("Sprechen")
+    card.refresh(state(held=True, latched=True, talking=True))
+    assert BORDER_TALKING in card.styleSheet()  # holding wins over the latch
+    card.refresh(state())
+    assert card.styleSheet() == ""
+    card.refresh(state(held=True, talking=False))  # global mute: nothing is transmitted, so no frame
+    assert card.styleSheet() == ""
+
+
+def test_the_talk_and_mute_buttons_are_coloured_so_that_they_stand_out(app):
+    from intercom_client.ui.window import LATCH_ON, LISTEN_ON, TALK_IDLE, TALK_ON, LineCard
+
+    card = LineCard(StubEngine(), "Regie", "f1", None)
+    card.refresh(state())
+    assert card.talk.styleSheet() == TALK_IDLE and "#2f6fed" in TALK_IDLE  # idle: a solid blue button
+    card.refresh(state(held=True, talking=True, latched=True, listen_mute=True))
+    assert card.talk.styleSheet() == TALK_ON and card.latch.styleSheet() == LATCH_ON
+    assert card.listen.styleSheet() == LISTEN_ON and card.listen.text() == "Stumm ●"
+
+
+def test_the_programme_card_keeps_the_columns_aligned_and_shows_its_tag_without_the_count(app):
+    from intercom_client.ui.window import LineCard
+
+    normal, prog = LineCard(StubEngine(), "Regie", "f1", None), LineCard(StubEngine(), "Programm", None, None)
+    normal.refresh(state())
+    prog.refresh(state(program=True))
+    assert not prog.tag.isHidden() and prog.count.isHidden() and not normal.count.isHidden()
+    assert prog.talk.isHidden() and prog.latch.isHidden()  # no talk buttons ...
+    assert prog.talkbox.width() == normal.talkbox.width() or prog.talkbox.minimumWidth() == normal.talkbox.minimumWidth()
+    assert not prog.talkbox.isHidden()  # ... but their room stays, so volume and meters line up with the other cards
+
+
+def test_many_lines_fold_all_at_once_and_the_state_is_remembered(app, tmp_path):
+    cfg = tmp_path / "client.toml"
+    write_many(cfg, 12)
+    win = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)
+    try:
+        win.connect_now()
+        assert pump(app, until=lambda: len(win.cards) == 12 and win.cards["Leitung 12"].pill.text() == "Verbunden")
+        assert win.btn_collapse.text() == "Alle einklappen"
+        win.btn_collapse.click()
+        assert all(c.collapsed for c in win.cards.values()) and win.btn_collapse.text() == "Alle ausklappen"
+        assert pump(app, until=lambda: all(l.get("collapsed") for l in tomlio.load_raw(cfg)["line"]), timeout=4)
+
+        win.cards["Leitung 3"].arrow.click()  # one card opened again
+        assert win.btn_collapse.text() == "Alle einklappen"  # not all folded any more
+        assert pump(app, until=lambda: "collapsed" not in {l["name"]: l for l in tomlio.load_raw(cfg)["line"]}["Leitung 3"],
+                    timeout=4)
+        assert tomlio.load_raw(cfg)["line"][0]["collapsed"] is True
+    finally:
+        win.close()
+
+    again = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)  # the next start
+    try:
+        again.connect_now()
+        assert pump(app, until=lambda: len(again.cards) == 12)
+        assert [c.collapsed for c in again.cards.values()] == [i != 2 for i in range(12)]
+        again.btn_collapse.click()  # one is open: folds that one too
+        assert all(c.collapsed for c in again.cards.values())
+        again.btn_collapse.click()
+        assert not any(c.collapsed for c in again.cards.values())
+    finally:
+        again.close()
+
+
+def test_collapsed_is_read_from_the_config_and_kept_by_the_settings_dialog(app, tmp_path):
+    from intercom_client.config import ConfigError, parse_client_config
+
+    base = {"server": {"url": "https://x", "username": "a"}, "audio": {"backend": "synthetic"}}
+    line = {"name": "A", "production_id": 1, "line_id": 1}
+    ok = parse_client_config({**base, "line": [{**line, "collapsed": True}]}, env={"INTERCOM_CLIENT_PASSWORD": "p"})
+    assert ok.lines[0].collapsed is True
+    assert parse_client_config({**base, "line": [line]}, env={"INTERCOM_CLIENT_PASSWORD": "p"}).lines[0].collapsed is False
+    with pytest.raises(ConfigError, match="collapsed"):
+        parse_client_config({**base, "line": [{**line, "collapsed": 1}]}, env={"INTERCOM_CLIENT_PASSWORD": "p"})
+
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    raw = tomlio.load_raw(cfg)
+    raw["line"][0]["collapsed"] = True
+    tomlio.save(cfg, raw)
+    d = ClientSettingsDialog(cfg, device_lists=([], []))
+    d.pw.setText("x")
+    d._accept()
+    by_name = {l["name"]: l for l in d.result_data["line"]}
+    assert by_name["Regie"]["collapsed"] is True and "collapsed" not in by_name["Technik"]
+
+
+def test_the_window_has_room_for_a_whole_row_without_scrolling_sideways(app, tmp_path):
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    win = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)
+    try:
+        win.connect_now()
+        assert pump(app, until=lambda: win.cards["Regie"].pill.text() == "Verbunden")
+        win.resize(win.minimumWidth(), 600)
+        win.show()
+        pump(app, 0.3)
+        card = win.cards["Regie"]
+        assert card.sizeHint().width() <= win.scroll.viewport().width()  # a row fits at the smallest window width
+        assert win.minimumWidth() >= 1000
+    finally:
+        win.close()

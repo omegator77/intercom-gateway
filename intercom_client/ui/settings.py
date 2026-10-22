@@ -147,8 +147,10 @@ class ClientSettingsDialog(QDialog):
         ops.addWidget(hint, 1)
         v.addLayout(ops)
         self._volumes: dict[str, int] = {}
+        self._collapsed: dict[str, bool] = {}
         for line in raw.get("line", []):
             self._volumes[str(line.get("name", ""))] = int(line.get("volume", 100))
+            self._collapsed[str(line.get("name", ""))] = bool(line.get("collapsed", False))
             self._add_row(line.get("name", ""), str(line.get("production_id", "")), str(line.get("line_id", "")),
                           line.get("ptt_key"), line.get("latch_key"), bool(line.get("autoconnect", True)))
 
@@ -478,6 +480,8 @@ class ClientSettingsDialog(QDialog):
                 entry["latch_key"] = latch
             if not auto:
                 entry["autoconnect"] = False
+            if self._collapsed.get(name):
+                entry["collapsed"] = True
             lines.append(entry)
         if not lines:
             raise ValueError("Mindestens eine Leitung hinzufügen.")

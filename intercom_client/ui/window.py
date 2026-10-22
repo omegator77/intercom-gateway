@@ -8,7 +8,7 @@ import threading
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
-                               QScrollArea, QSlider, QVBoxLayout, QWidget)
+                               QScrollArea, QSlider, QToolButton, QVBoxLayout, QWidget)
 
 from gateway import credentials, tomlio
 from gateway.ui.style import muted
@@ -21,11 +21,21 @@ from .settings import NOISE_LEVELS, ClientSettingsDialog
 
 log = logging.getLogger("client.ui")
 
-TALK_ON = "background:#d0472f; color:white; font-weight:700; border-radius:6px; padding:10px 18px;"
-TALK_OFF = "font-weight:600; border-radius:6px; padding:10px 18px;"
-LATCH_ON = "background:#c98a00; color:white; font-weight:700; border-radius:6px; padding:10px 14px;"
-LATCH_OFF = "border-radius:6px; padding:10px 14px;"
-MUTE_ON = "background:#7a7f87; color:white; border-radius:6px; padding:10px 14px;"
+BTN = "border:none; border-radius:6px; padding:0 14px; font-weight:700; min-height:38px;"
+TALK_IDLE = (f"QPushButton {{{BTN} background:#2f6fed; color:white;}} QPushButton:hover {{background:#4a82f0;}} "
+             "QPushButton:disabled {background:#9aa0a6; color:#e8eaed;}")
+TALK_ON = f"QPushButton {{{BTN} background:#d0472f; color:white;}}"
+LATCH_IDLE = (f"QPushButton {{{BTN} background:#5f6368; color:white;}} QPushButton:hover {{background:#74797e;}} "
+              "QPushButton:disabled {background:#9aa0a6; color:#e8eaed;}")
+LATCH_ON = f"QPushButton {{{BTN} background:#c98a00; color:white;}}"
+LISTEN_IDLE = LATCH_IDLE
+LISTEN_ON = f"QPushButton {{{BTN} background:#b3261e; color:white;}}"
+PLAIN_BTN = ("QPushButton {border:1px solid #8a8f94; border-radius:6px; padding:0 10px; min-height:34px;} "
+             "QPushButton:hover {background:rgba(128, 128, 128, 0.25);} "
+             "QPushButton:disabled {color:#9aa0a6; border-color:#c4c7c9;}")
+
+BORDER_TALKING = "#d0472f"  # the whole card gets a coloured frame while you are transmitting into it
+BORDER_LATCHED = "#c98a00"
 
 # the gateway's wording, except that a line which is switched off is "Getrennt" (not "Aus")
 COMPANION_TEXT = {
@@ -46,115 +56,202 @@ def companion_text(status: str) -> str:
 STATES = {**STATE_TEXT, "off": ("Getrennt", "#7a7f87"), "idle": ("Bereit", "#7a7f87")}
 
 
+_KEY_SHORT = {"ctrl": "Strg", "shift": "⇧", "alt": "Alt", "win": "Win"}
+
+
 def key_hint(spec: str | None) -> str:
-    return f"  [{spec.upper()}]" if spec else ""
+    """'shift+f1' -> '  [⇧F1]': short, so that the buttons stay narrow."""
+    if not spec:
+        return ""
+    out = ""
+    for part in spec.split("+"):
+        if part == "shift":
+            out += _KEY_SHORT[part]  # the symbol needs no plus: "⇧F1"
+        elif part in _KEY_SHORT:
+            out += _KEY_SHORT[part] + "+"
+        else:
+            out += part.upper()
+    return f"  [{out}]"
 
 
 class LineCard(QFrame):
-    def __init__(self, engine: ClientEngine, name: str, ptt_key: str | None, latch_key: str | None) -> None:
+    """One line. Folded it is a single row with everything needed while working (talk, latch, mute, volume, level);
+    unfolded it also shows who is on the line, the sending level and messages."""
+
+    collapsedChanged = Signal(bool)
+
+    def __init__(self, engine, name: str, ptt_key: str | None, latch_key: str | None, collapsed: bool = False) -> None:
         super().__init__()
         self.engine, self.name = engine, name
+        self.collapsed = collapsed
+        self._frame = ""
+        self._keys = {"ptt": ptt_key, "latch": latch_key}
+        self.setObjectName("LineCard")
         self.setFrameShape(QFrame.StyledPanel)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(14, 12, 14, 12)
-        outer.setSpacing(8)
+        outer.setContentsMargins(10, 6, 10, 6)
+        outer.setSpacing(4)
 
         head = QHBoxLayout()
+        head.setSpacing(6)
+        self.arrow = QToolButton()
+        self.arrow.setAutoRaise(True)
+        self.arrow.setFocusPolicy(Qt.NoFocus)
+        self.arrow.setToolTip("Details ein- oder ausklappen")
         self.title = QLabel(name)
         f = self.title.font()
-        f.setPointSizeF(f.pointSizeF() * 1.25)
+        f.setPointSizeF(f.pointSizeF() * 1.15)
         f.setBold(True)
         self.title.setFont(f)
+        self.title.setFixedWidth(100)  # fixed widths keep the buttons of all cards in the same columns
+        self.title.setToolTip(name)
         self.pill = QLabel()
         self.pill.setAlignment(Qt.AlignCenter)
+        self.pill.setFixedWidth(98)
         self.tag = QLabel()  # "Programm" / "Programm · gedimmt"
         self.tag.setVisible(False)
-        self.since = QLabel()
-        muted(self.since)
-        self.connect_btn = QPushButton("Trennen")
-        self.connect_btn.setFocusPolicy(Qt.NoFocus)
-        self.connect_btn.setToolTip("Nur diese Leitung trennen bzw. wieder verbinden")
-        head.addWidget(self.title)
-        head.addWidget(self.pill)
-        head.addWidget(self.tag)
-        head.addStretch(1)
-        head.addWidget(self.since)
-        head.addWidget(self.connect_btn)
-        outer.addLayout(head)
-
-        self.people = QLabel()
-        self.people.setTextFormat(Qt.RichText)
-        self.people.setWordWrap(True)
-        outer.addWidget(self.people)
-
-        buttons = QHBoxLayout()
+        self.count = QLabel()  # "2 weitere" - who is there, without unfolding
+        muted(self.count)
         self.talk = QPushButton("Sprechen" + key_hint(ptt_key))
         self.talk.setToolTip("Gedrückt halten, um in diese Leitung zu sprechen")
-        self.talk.setMinimumWidth(190)
+        self.talk.setFixedWidth(128)
         self.latch = QPushButton("Dauer" + key_hint(latch_key))
         self.latch.setCheckable(True)
         self.latch.setToolTip("Dauer-Sprechen ein/aus")
-        self.listen = QPushButton("Hören aus")
+        self.latch.setFixedWidth(112)
+        self.listen = QPushButton("Stumm")
         self.listen.setCheckable(True)
         self.listen.setToolTip("Diese Leitung nicht hören")
-        for b in (self.talk, self.latch, self.listen):
-            b.setFocusPolicy(Qt.NoFocus)  # the space bar must not trigger a button by accident
-            buttons.addWidget(b)
-        buttons.addStretch(1)
-        outer.addLayout(buttons)
-
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Lautstärke"))
+        self.listen.setFixedWidth(72)
         self.volume = QSlider(Qt.Horizontal)
         self.volume.setRange(0, 150)
-        self.volume.setFixedWidth(220)
+        self.volume.setFixedWidth(100)
         self.volume_text = QLabel()
-        self.volume_text.setMinimumWidth(44)
-        row.addWidget(self.volume)
-        row.addWidget(self.volume_text)
-        row.addSpacing(16)
-        self.send_label = QLabel("Senden")
-        row.addWidget(self.send_label)
-        self.in_meter = Meter()
-        row.addWidget(self.in_meter, 1)
-        row.addSpacing(8)
-        row.addWidget(QLabel("Hören"))
+        self.volume_text.setMinimumWidth(38)
         self.out_meter = Meter()
-        row.addWidget(self.out_meter, 1)
-        outer.addLayout(row)
+        self.out_meter.setMinimumWidth(50)
+        self.out_meter.setMaximumWidth(100)
+        self.out_meter.setToolTip("Was in dieser Leitung ankommt")
+        self.connect_btn = QPushButton("Trennen")
+        self.connect_btn.setToolTip("Nur diese Leitung trennen bzw. wieder verbinden")
+        self.connect_btn.setStyleSheet(PLAIN_BTN)
+        self.connect_btn.setFixedWidth(72)
+        for b in (self.talk, self.latch, self.listen, self.connect_btn):
+            b.setFocusPolicy(Qt.NoFocus)  # the space bar must not trigger a button by accident
+        slot = QWidget()  # "Programm" or "+2": one fixed slot, so nothing shifts
+        slot.setFixedWidth(84)
+        sl = QHBoxLayout(slot)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.addWidget(self.tag)
+        sl.addWidget(self.count)
+        sl.addStretch(1)
+        for w in (self.arrow, self.title, self.pill, slot):
+            head.addWidget(w)
+        head.addSpacing(6)
+        # the talk buttons keep their room even where they are hidden (the programme line is listen-only)
+        self.talkbox = QWidget()
+        self.talkbox.setFixedWidth(128 + 112 + 6)
+        tb = QHBoxLayout(self.talkbox)
+        tb.setContentsMargins(0, 0, 0, 0)
+        tb.setSpacing(6)
+        tb.addWidget(self.talk)
+        tb.addWidget(self.latch)
+        head.addWidget(self.talkbox)
+        head.addWidget(self.listen)
+        head.addSpacing(6)
+        head.addWidget(self.volume)
+        head.addWidget(self.volume_text)
+        head.addWidget(self.out_meter, 1)
+        head.addWidget(self.connect_btn)
+        outer.addLayout(head)
 
+        # the part that folds away
+        self.details = QWidget()
+        d = QVBoxLayout(self.details)
+        d.setContentsMargins(26, 2, 0, 2)
+        d.setSpacing(4)
+        self.people = QLabel()
+        self.people.setTextFormat(Qt.RichText)
+        self.people.setWordWrap(True)
+        d.addWidget(self.people)
+        info = QHBoxLayout()
+        self.since = QLabel()
+        muted(self.since)
+        self.send_label = QLabel("Senden")
+        self.in_meter = Meter()
+        info.addWidget(self.since)
+        info.addStretch(1)
+        info.addWidget(self.send_label)
+        info.addWidget(self.in_meter, 1)
+        d.addLayout(info)
         self.note = QLabel()
         self.note.setWordWrap(True)
         self.note.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        outer.addWidget(self.note)
+        d.addWidget(self.note)
+        outer.addWidget(self.details)
 
+        self.arrow.clicked.connect(lambda: self.set_collapsed(not self.collapsed))
         self.connect_btn.clicked.connect(lambda: engine.toggle_line(name))
         self.talk.pressed.connect(lambda: engine.ptt(name, True))
         self.talk.released.connect(lambda: engine.ptt(name, False))
         self.latch.clicked.connect(lambda: engine.toggle_latch(name))
         self.listen.clicked.connect(lambda: engine.set_listen_mute(name, self.listen.isChecked()))
         self.volume.valueChanged.connect(lambda v: engine.set_volume(name, v))
+        self.talk.setStyleSheet(TALK_IDLE)
+        self.latch.setStyleSheet(LATCH_IDLE)
+        self.listen.setStyleSheet(LISTEN_IDLE)
+        self._apply_collapsed()
+
+    # -- folding
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        if collapsed == self.collapsed:
+            return
+        self.collapsed = collapsed
+        self._apply_collapsed()
+        self.collapsedChanged.emit(collapsed)
+
+    def _apply_collapsed(self) -> None:
+        self.details.setVisible(not self.collapsed)
+        self.arrow.setArrowType(Qt.RightArrow if self.collapsed else Qt.DownArrow)
+
+    def _set_frame(self, color: str | None) -> None:
+        style = f"QFrame#LineCard {{border:2px solid {color}; border-radius:8px;}}" if color else ""
+        if style != self._frame:
+            self._frame = style
+            self.setStyleSheet(style)
+
+    # -- what to show
 
     def show_off(self) -> None:
         """The client is disconnected altogether: nothing of the last state may stay on screen."""
         text, color = STATES["off"]
         self.pill.setText(text)
         self.pill.setStyleSheet(f"background:{color}; color:white; border-radius:9px; padding:2px 10px; font-weight:600;")
+        self.pill.setToolTip("")
         self.since.setText("")
+        self.count.setText("")
         self.tag.setVisible(False)
         self.people.setVisible(False)
         self.note.setVisible(False)
-        self.talk.setStyleSheet(TALK_OFF)
-        self.talk.setText("Sprechen")
+        self._set_frame(None)
+        self.talk.setStyleSheet(TALK_IDLE)
+        self.talk.setText("Sprechen" + key_hint(self.engine_key("ptt")))
         self.latch.setChecked(False)
-        self.latch.setStyleSheet(LATCH_OFF)
+        self.latch.setStyleSheet(LATCH_IDLE)
+        self.listen.setChecked(False)
+        self.listen.setStyleSheet(LISTEN_IDLE)
         self.in_meter.set_db(-120.0)
         self.out_meter.set_db(-120.0)
         self.connect_btn.setText("Verbinden")
         for w in (self.talk, self.latch, self.listen, self.connect_btn):
             w.setEnabled(False)
 
+    def engine_key(self, which: str) -> str | None:
+        return self._keys.get(which)
+
     def refresh(self, s: dict) -> None:
+        self._keys = {"ptt": s["ptt_key"], "latch": s["latch_key"]}
         enabled = s.get("enabled", True)
         for w in (self.talk, self.latch, self.listen):
             w.setEnabled(enabled)
@@ -163,27 +260,37 @@ class LineCard(QFrame):
         text, color = STATES.get(s["state"], (s["state"], "#7a7f87"))
         self.pill.setText(text)
         self.pill.setStyleSheet(f"background:{color}; color:white; border-radius:9px; padding:2px 10px; font-weight:600;")
+        self.pill.setToolTip(s["last_error"] or "")
         self.since.setText(f"verbunden seit {fmt_duration(s['uptime_s'])}" if s["state"] == "connected" else "")
         program = bool(s.get("program")) and enabled
         for w in (self.talk, self.latch, self.send_label, self.in_meter):
             w.setVisible(not program)  # the programme line is listen-only: no talk buttons there
         self.tag.setVisible(program)
+        self.count.setVisible(not program)  # the slot shows the programme tag OR how many others are there
         if program:
             dimmed = bool(s.get("dimmed"))
-            self.tag.setText("Programm · gedimmt" if dimmed else "Programm")
+            self.tag.setText("↓ gedimmt" if dimmed else "Programm")
+            self.tag.setToolTip("Programm-Leitung" + (": wird gerade abgesenkt" if dimmed else ""))
             self.tag.setStyleSheet("background:#c98a00; color:white; border-radius:9px; padding:2px 10px; font-weight:600;"
                                    if dimmed else "background:#3b6ea5; color:white; border-radius:9px; padding:2px 10px;")
-        people = people_html(s["participants"]) if s["state"] == "connected" else ""
+        connected = s["state"] == "connected"
+        people = people_html(s["participants"]) if connected else ""
         self.people.setText(people)
         self.people.setVisible(bool(people))
+        others = s["participants"] if connected else None
+        self.count.setText("" if others is None else ("niemand sonst" if not others else f"+{len(others)}"))
+        self.count.setToolTip("Wer noch in der Leitung ist: aufklappen" if others else "")
 
-        self.talk.setStyleSheet(TALK_ON if s["held"] and s["talking"] else TALK_OFF)
-        self.talk.setText(("● Sendet" if s["held"] and s["talking"] else "Sprechen") + key_hint(s["ptt_key"]))
+        held, latched = bool(s["held"] and s["talking"]), bool(s["latched"] and s["talking"])
+        self.talk.setStyleSheet(TALK_ON if held else TALK_IDLE)
+        self.talk.setText(("● Sendet" if held else "Sprechen") + key_hint(s["ptt_key"]))
         self.latch.setChecked(s["latched"])
-        self.latch.setStyleSheet(LATCH_ON if s["latched"] else LATCH_OFF)
-        self.latch.setText(("● Dauer" if s["latched"] and s["talking"] else "Dauer") + key_hint(s["latch_key"]))
+        self.latch.setStyleSheet(LATCH_ON if s["latched"] else LATCH_IDLE)
+        self.latch.setText(("● Dauer" if latched else "Dauer") + key_hint(s["latch_key"]))
         self.listen.setChecked(s["listen_mute"])
-        self.listen.setStyleSheet(MUTE_ON if s["listen_mute"] else "")
+        self.listen.setStyleSheet(LISTEN_ON if s["listen_mute"] else LISTEN_IDLE)
+        self.listen.setText("Stumm ●" if s["listen_mute"] else "Stumm")
+        self._set_frame(BORDER_TALKING if held else (BORDER_LATCHED if latched else None))
 
         if not self.volume.isSliderDown() and self.volume.value() != s["volume_pct"]:
             self.volume.blockSignals(True)
@@ -194,11 +301,11 @@ class LineCard(QFrame):
         self.out_meter.set_db(s["out_dbfs"])
 
         parts, bad = [], False
+        a = s.get("audio") or {}
         if s["last_error"]:
             parts.append(s["last_error"])
             bad = True
-        a = s.get("audio") or {}
-        if s["state"] == "connected" and a.get("underruns"):
+        if connected and a.get("underruns"):
             parts.append(f"{a['underruns']} Aussetzer beim Hören")
         self.note.setText("  ·  ".join(parts))
         self.note.setVisible(bool(parts))
@@ -217,7 +324,8 @@ class MainWindow(QMainWindow):
         self.engine: ClientEngine | None = None
         self.cards: dict[str, LineCard] = {}
         self.setWindowTitle("Intercom-Client")
-        self.resize(760, 560)
+        self.resize(1100, 660)
+        self.setMinimumWidth(1040)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -229,13 +337,16 @@ class MainWindow(QMainWindow):
         self.btn_mute_all.setCheckable(True)
         self.btn_mute_all.setToolTip("Das Mikrofon in allen Leitungen aus (Sprechen und Dauer werden unterbrochen)")
         self.btn_settings = QPushButton("Einstellungen …")
-        for b in (self.btn_connect, self.btn_mute_all, self.btn_settings):
+        self.btn_collapse = QPushButton("Alle einklappen")
+        self.btn_collapse.setToolTip("Alle Leitungen auf eine Zeile verkleinern bzw. wieder aufklappen")
+        for b in (self.btn_connect, self.btn_mute_all, self.btn_settings, self.btn_collapse):
             b.setFocusPolicy(Qt.NoFocus)
         self.status = QLabel()
         muted(self.status)
         bar.addWidget(self.btn_connect)
         bar.addWidget(self.btn_mute_all)
         bar.addWidget(self.btn_settings)
+        bar.addWidget(self.btn_collapse)
         bar.addStretch(1)
         bar.addWidget(QLabel("Mikrofon"))
         self.mic_meter = Meter()
@@ -286,6 +397,7 @@ class MainWindow(QMainWindow):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.cards_host = QWidget()
         self.cards_layout = QVBoxLayout(self.cards_host)
         self.cards_layout.setAlignment(Qt.AlignTop)
@@ -304,6 +416,7 @@ class MainWindow(QMainWindow):
         self.btn_connect.clicked.connect(self.toggle_connection)
         self.btn_mute_all.clicked.connect(lambda: self.engine and self.engine.set_global_mute(self.btn_mute_all.isChecked()))
         self.btn_settings.clicked.connect(self.open_settings)
+        self.btn_collapse.clicked.connect(self._toggle_all_collapsed)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -368,15 +481,33 @@ class MainWindow(QMainWindow):
         else:
             self.connect_now()
 
+    def _card_folded(self, _collapsed: bool) -> None:
+        self._update_collapse_button()
+        self._save_timer.start(700)
+
+    def _toggle_all_collapsed(self) -> None:
+        """Fold every card to one row, or - when all are folded already - open them all."""
+        fold = any(not c.collapsed for c in self.cards.values())
+        for card in self.cards.values():
+            card.set_collapsed(fold)
+        self._update_collapse_button()
+
+    def _update_collapse_button(self) -> None:
+        all_folded = bool(self.cards) and all(c.collapsed for c in self.cards.values())
+        self.btn_collapse.setText("Alle ausklappen" if all_folded else "Alle einklappen")
+        self.btn_collapse.setEnabled(bool(self.cards))
+
     def _build_cards(self, cfg: ClientCfg, engine: ClientEngine) -> None:
         for card in self.cards.values():
             card.setParent(None)
             card.deleteLater()
         self.cards = {}
         for line in cfg.lines:
-            card = LineCard(engine, line.name, line.ptt_key, line.latch_key)
+            card = LineCard(engine, line.name, line.ptt_key, line.latch_key, line.collapsed)
+            card.collapsedChanged.connect(self._card_folded)
             self.cards[line.name] = card
             self.cards_layout.addWidget(card)
+        self._update_collapse_button()
 
     # -- microphone: live, and remembered for the next start
 
@@ -409,6 +540,11 @@ class MainWindow(QMainWindow):
                 else:
                     entry["autoconnect"] = False
                 entry["volume"] = int(eng.controls[name].volume_pct)
+                card = self.cards.get(name)
+                if card is not None and card.collapsed:
+                    entry["collapsed"] = True
+                else:
+                    entry.pop("collapsed", None)
             audio = dict(raw.get("audio") or {})
             audio["mic_gain_db"] = round(float(eng.mic_gain_db), 1)
             for key, value, default in (("echo_cancellation", eng.echo, False), ("noise_suppression", eng.noise, 0),
@@ -461,6 +597,7 @@ class MainWindow(QMainWindow):
                 card.show_off()
             return
         s = eng.snapshot()
+        self._update_collapse_button()
         self._sync_mic_controls(s)
         seen = {l["name"]: (l["enabled"], l["volume_pct"]) for l in s["lines"]}
         if self._seen_lines is None:
