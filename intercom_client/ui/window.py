@@ -27,6 +27,9 @@ LATCH_ON = "background:#c98a00; color:white; font-weight:700; border-radius:6px;
 LATCH_OFF = "border-radius:6px; padding:10px 14px;"
 MUTE_ON = "background:#7a7f87; color:white; border-radius:6px; padding:10px 14px;"
 
+# the gateway's wording, except that a line which is switched off is "Getrennt" (not "Aus")
+STATES = {**STATE_TEXT, "off": ("Getrennt", "#7a7f87"), "idle": ("Bereit", "#7a7f87")}
+
 
 def key_hint(spec: str | None) -> str:
     return f"  [{spec.upper()}]" if spec else ""
@@ -51,10 +54,14 @@ class LineCard(QFrame):
         self.pill.setAlignment(Qt.AlignCenter)
         self.since = QLabel()
         muted(self.since)
+        self.connect_btn = QPushButton("Trennen")
+        self.connect_btn.setFocusPolicy(Qt.NoFocus)
+        self.connect_btn.setToolTip("Nur diese Leitung trennen bzw. wieder verbinden")
         head.addWidget(self.title)
         head.addWidget(self.pill)
         head.addStretch(1)
         head.addWidget(self.since)
+        head.addWidget(self.connect_btn)
         outer.addLayout(head)
 
         self.people = QLabel()
@@ -102,14 +109,38 @@ class LineCard(QFrame):
         self.note.setTextInteractionFlags(Qt.TextSelectableByMouse)
         outer.addWidget(self.note)
 
+        self.connect_btn.clicked.connect(lambda: engine.toggle_line(name))
         self.talk.pressed.connect(lambda: engine.ptt(name, True))
         self.talk.released.connect(lambda: engine.ptt(name, False))
         self.latch.clicked.connect(lambda: engine.toggle_latch(name))
         self.listen.clicked.connect(lambda: engine.set_listen_mute(name, self.listen.isChecked()))
         self.volume.valueChanged.connect(lambda v: engine.set_volume(name, v))
 
+    def show_off(self) -> None:
+        """The client is disconnected altogether: nothing of the last state may stay on screen."""
+        text, color = STATES["off"]
+        self.pill.setText(text)
+        self.pill.setStyleSheet(f"background:{color}; color:white; border-radius:9px; padding:2px 10px; font-weight:600;")
+        self.since.setText("")
+        self.people.setVisible(False)
+        self.note.setVisible(False)
+        self.talk.setStyleSheet(TALK_OFF)
+        self.talk.setText("Sprechen")
+        self.latch.setChecked(False)
+        self.latch.setStyleSheet(LATCH_OFF)
+        self.in_meter.set_db(-120.0)
+        self.out_meter.set_db(-120.0)
+        self.connect_btn.setText("Verbinden")
+        for w in (self.talk, self.latch, self.listen, self.connect_btn):
+            w.setEnabled(False)
+
     def refresh(self, s: dict) -> None:
-        text, color = STATE_TEXT.get(s["state"], (s["state"], "#7a7f87"))
+        enabled = s.get("enabled", True)
+        for w in (self.talk, self.latch, self.listen):
+            w.setEnabled(enabled)
+        self.connect_btn.setEnabled(True)
+        self.connect_btn.setText("Trennen" if enabled else "Verbinden")
+        text, color = STATES.get(s["state"], (s["state"], "#7a7f87"))
         self.pill.setText(text)
         self.pill.setStyleSheet(f"background:{color}; color:white; border-radius:9px; padding:2px 10px; font-weight:600;")
         self.since.setText(f"verbunden seit {fmt_duration(s['uptime_s'])}" if s["state"] == "connected" else "")
@@ -284,6 +315,12 @@ class MainWindow(QMainWindow):
         eng = self.engine
         if eng is None:
             self.status.setText("Nicht verbunden" if self.config_path.exists() else "Noch nicht eingerichtet")
+            self.mic_meter.set_db(-120.0)
+            self.out_meter.set_db(-120.0)
+            self.btn_mute_all.setChecked(False)
+            self.btn_mute_all.setStyleSheet("")
+            for card in self.cards.values():
+                card.show_off()
             return
         s = eng.snapshot()
         self.mic_meter.set_db(s["mic_dbfs"])

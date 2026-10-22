@@ -1,5 +1,6 @@
 """The engine with a fake line worker: no network, the synthetic audio hub."""
 import asyncio
+import time
 
 import numpy as np
 import pytest
@@ -67,7 +68,6 @@ def make(**kw):
 
 
 def wait_for(cond, timeout=5.0):
-    import time
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if cond():
@@ -191,3 +191,64 @@ def test_listeners_hear_about_changes():
     eng.on_change(lambda: 1 / 0)  # a broken listener must not break the controls
     eng.toggle_latch("Regie")
     assert len(calls) == 4
+
+
+def test_one_line_can_be_disconnected_and_connected_again_while_the_others_stay():
+    cfg, eng = make()
+    eng.start()
+    try:
+        assert wait_for(lambda: len(FakeWorker.instances) == 2 and len(eng.hub._lines) == 2)
+        eng.ptt("Regie", True)
+        eng.toggle_latch("Regie")
+
+        eng.disconnect_line("Regie")
+        assert wait_for(lambda: len(eng.hub._lines) == 1)
+        assert [l.control.name for l in eng.hub._lines] == ["Technik"]  # Regie's audio was released
+        snap = eng.snapshot()["lines"]
+        assert (snap[0]["name"], snap[0]["enabled"], snap[0]["state"]) == ("Regie", False, "off")
+        assert snap[1]["enabled"] and snap[1]["state"] == "connected"
+        assert not eng.controls["Regie"].talk.transmitting  # nothing keeps "talking" into a line that is gone
+        assert FakeWorker.instances[0]._stop.is_set()
+
+        eng.connect_line("Regie")
+        assert wait_for(lambda: len(eng.hub._lines) == 2 and len(FakeWorker.instances) == 3)
+        assert eng.snapshot()["lines"][0]["enabled"] and eng.snapshot()["lines"][0]["state"] == "connected"
+        assert FakeWorker.instances[2].auth is FakeWorker.instances[1].auth  # still the one shared login
+
+        eng.toggle_line("Technik")
+        assert wait_for(lambda: not eng.snapshot()["lines"][1]["enabled"])
+        eng.toggle_line("Technik")
+        assert wait_for(lambda: eng.snapshot()["lines"][1]["enabled"] and len(eng.hub._lines) == 2)
+    finally:
+        eng.stop()
+    assert eng.hub._lines == ()
+
+
+def test_a_line_that_is_still_connecting_is_cancelled_when_disconnected(monkeypatch):
+    class Stuck(FakeWorker):
+        async def run(self):
+            if self.cfg.name == "Regie":
+                await asyncio.sleep(3600)  # never gets connected (login or connect hanging)
+            else:
+                await super().run()
+
+    monkeypatch.setattr(engine_mod, "LineWorker", Stuck)
+    cfg, eng = make()
+    eng.start()
+    try:
+        assert wait_for(lambda: len(eng.hub._lines) == 1)
+        started = time.monotonic()
+        eng.disconnect_line("Regie")
+        assert wait_for(lambda: "Regie" not in eng._tasks, 5)
+        assert wait_for(lambda: eng.snapshot()["lines"][0]["state"] == "off", 5)
+        assert time.monotonic() - started < 6  # not the full hour, not even the connect timeout
+    finally:
+        eng.stop()
+
+
+def test_line_commands_before_start_do_not_crash():
+    cfg, eng = make()
+    eng.disconnect_line("Regie")
+    eng.connect_line("Regie")
+    eng.toggle_line("Technik")
+    assert eng.line_enabled == {"Regie": True, "Technik": False}

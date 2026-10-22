@@ -264,3 +264,53 @@ def test_settings_dialog_never_grows_beyond_the_screen_and_keeps_its_buttons_rea
         d._add_row(f"Leitung {i}", "9", str(i), None, None)
     d2 = dialog(tmp_path)
     assert d2.height() <= screen.height()
+
+
+def test_after_disconnecting_the_cards_show_disconnected_not_the_last_state(app, tmp_path):
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    win = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)
+    try:
+        win.connect_now()
+        assert pump(app, until=lambda: win.cards["Regie"].pill.text() == "Verbunden")
+        win.btn_mute_all.click()
+        win.cards["Regie"].talk.pressed.emit()
+        win.toggle_connection()  # "Trennen"
+        pump(app, 0.4)
+        assert win.engine is None and win.btn_connect.text() == "Verbinden"
+        for card in win.cards.values():
+            assert card.pill.text() == "Getrennt" and card.since.text() == ""
+            assert card.people.isHidden() and card.note.isHidden()
+            assert not card.talk.isEnabled() and not card.latch.isEnabled() and not card.listen.isEnabled()
+            assert card.connect_btn.text() == "Verbinden" and not card.connect_btn.isEnabled()
+        assert not win.btn_mute_all.isChecked()
+        win.toggle_connection()  # and connecting again brings the live state back
+        assert pump(app, until=lambda: win.cards["Regie"].pill.text() == "Verbunden")
+        assert win.cards["Regie"].talk.isEnabled()
+    finally:
+        win.close()
+
+
+def test_the_button_on_a_card_disconnects_and_connects_just_that_line(app, tmp_path):
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    win = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)
+    try:
+        win.connect_now()
+        assert pump(app, until=lambda: win.cards["Regie"].pill.text() == "Verbunden"
+                    and win.cards["Technik"].pill.text() == "Verbunden")
+        regie, technik = win.cards["Regie"], win.cards["Technik"]
+        assert regie.connect_btn.text() == "Trennen" and regie.connect_btn.isEnabled()
+
+        regie.connect_btn.click()
+        assert pump(app, until=lambda: regie.pill.text() == "Getrennt")
+        assert regie.connect_btn.text() == "Verbinden" and regie.connect_btn.isEnabled()
+        assert not regie.talk.isEnabled() and not regie.latch.isEnabled()
+        assert technik.pill.text() == "Verbunden" and technik.talk.isEnabled()  # the other line is untouched
+        assert win.engine is not None and win.btn_connect.text() == "Trennen"
+
+        regie.connect_btn.click()
+        assert pump(app, until=lambda: regie.pill.text() == "Verbunden")
+        assert regie.talk.isEnabled() and regie.connect_btn.text() == "Trennen"
+    finally:
+        win.close()

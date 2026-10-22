@@ -43,6 +43,15 @@ class ClientEngine:
         self.error: str | None = None  # why the engine could not start (devices, ...)
         self.hotkey_status = "off"  # "ok", "off", or the reason global hotkeys are unavailable
         self._global_mute = False  # kept here too, because the hub only exists once the audio is open
+        self.line_enabled: dict[str, bool] = {l.name: True for l in cfg.lines}  # connected (or connecting) by choice
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._closing = False  # shutting down: no new line worker may be started any more
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._factory = None
+        self._http = None
+        self._auth = None
+        self._server = ServerCfg(cfg.server_url)
+        self._audio_cfg = AudioCfg(cfg.audio.backend, cfg.audio.playout_ms)
         self._enable_hotkeys = enable_hotkeys
         self._hub_factory = hub_factory
         self._hotkeys: HotkeyListener | None = None
@@ -80,7 +89,6 @@ class ClientEngine:
         self._loop = asyncio.get_running_loop()
         self._stop = asyncio.Event()
         http = None
-        tasks: list[asyncio.Task] = []
         try:
             hub = self.hub = self._hub_factory(self.cfg.audio)
             hub.global_mute = self._global_mute
@@ -92,25 +100,26 @@ class ClientEngine:
                 return
             finally:
                 self._ready.set()
-            http = await create_client(self.cfg.server_url)
-            auth = AuthClient(http, self.cfg.username, self.cfg.password)
-            audio_cfg = AudioCfg(self.cfg.audio.backend, self.cfg.audio.playout_ms)
-            server = ServerCfg(self.cfg.server_url)
+            http = self._http = await create_client(self.cfg.server_url)
+            self._auth = AuthClient(http, self.cfg.username, self.cfg.password)
 
             def factory(line_cfg: LineCfg, audio: AudioCfg, loop: asyncio.AbstractEventLoop) -> SharedLineAudio:
                 return SharedLineAudio(self.controls[line_cfg.name], hub, loop, line_cfg.playout_ms or audio.playout_ms)
 
+            self._factory = factory
             for line in self.cfg.lines:
-                w = LineWorker(worker_line_cfg(self.cfg, line), server, audio_cfg, factory, http, auth=auth)
-                self.workers[line.name] = w
-                tasks.append(asyncio.ensure_future(w.run()))
+                self._locks[line.name] = asyncio.Lock()
+                if self.line_enabled[line.name]:
+                    self._spawn(line)
             self._start_hotkeys()
             self._notify()
             await self._stop.wait()
         finally:
+            self._closing = True
             self._stop_hotkeys()
             for w in self.workers.values():
                 w.stop()
+            tasks = list(self._tasks.values())
             if tasks:
                 done, pending = await asyncio.wait(tasks, timeout=15)
                 for t in pending:
@@ -121,6 +130,59 @@ class ClientEngine:
                 await http.aclose()
             self._ready.set()
             self._notify()
+
+    # ------------------------------------------------------------------ one line at a time
+
+    def _spawn(self, line: ClientLine) -> None:
+        """Start a (new) reconnecting worker for the line. On the engine's loop."""
+        w = LineWorker(worker_line_cfg(self.cfg, line), self._server, self._audio_cfg, self._factory, self._http,
+                       auth=self._auth)
+        self.workers[line.name] = w
+        self._tasks[line.name] = asyncio.ensure_future(w.run())
+
+    async def _set_line(self, name: str, on: bool) -> None:
+        async with self._locks[name]:
+            line = next(l for l in self.cfg.lines if l.name == name)
+            task = self._tasks.get(name)
+            if on:
+                if not self._closing and (task is None or task.done()):
+                    self._spawn(line)
+            else:
+                self._tasks.pop(name, None)
+                w = self.workers.pop(name, None)
+                if w:
+                    w.stop()
+                if task:
+                    # a connected line ends at once; one still logging in or connecting is cancelled after a moment
+                    _, pending = await asyncio.wait({task}, timeout=2)
+                    if pending:
+                        task.cancel()
+                        await asyncio.wait({task}, timeout=12)
+                self.controls[name].talk.stop_all()  # nothing may stay "talking" into a line that is gone
+        self._notify()
+
+    def _run_on_loop(self, coro) -> None:
+        if self._loop and self._thread and self._thread.is_alive():
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
+        else:
+            coro.close()
+
+    def connect_line(self, name: str) -> None:
+        self.line_enabled[name] = True
+        self._run_on_loop(self._set_line(name, True))
+        self._notify()
+
+    def disconnect_line(self, name: str) -> None:
+        self.line_enabled[name] = False
+        self.controls[name].talk.stop_all()
+        self._run_on_loop(self._set_line(name, False))
+        self._notify()
+
+    def toggle_line(self, name: str) -> None:
+        if self.line_enabled[name]:
+            self.disconnect_line(name)
+        else:
+            self.connect_line(name)
 
     # ------------------------------------------------------------------ hotkeys
 
@@ -216,13 +278,15 @@ class ClientEngine:
         for name in self.order:
             c = self.controls[name]
             line = next(l for l in self.cfg.lines if l.name == name)
-            w = self.workers.get(name)
+            enabled = self.line_enabled[name]
+            w = self.workers.get(name) if enabled else None
             s = w.status() if w else {}
             lines.append({
                 "name": name,
                 "production_id": line.production_id,
                 "line_id": line.line_id,
-                "state": s.get("state", "idle"),
+                "enabled": enabled,
+                "state": s.get("state", "idle") if enabled else "off",
                 "uptime_s": s.get("uptime_s", 0),
                 "last_error": s.get("last_error"),
                 "participants": s.get("participants"),

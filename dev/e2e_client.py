@@ -56,6 +56,10 @@ def line(eng: ClientEngine, name: str) -> dict:
     return next(l for l in eng.snapshot()["lines"] if l["name"] == name)
 
 
+def on_line(eng: ClientEngine, name: str) -> list[str]:
+    return [p["name"] for p in (line(eng, name)["participants"] or [])]
+
+
 def main() -> int:
     a, b = make("human_regie", 440.0), make("human_technik", 660.0)
     a.start()
@@ -110,6 +114,20 @@ def main() -> int:
         time.sleep(3)
         check("both directions at once, each on its own line",
               heard(a, 660.0) > 0.02 and heard(b, 440.0) > 0.02, f"{heard(a, 660.0):.3f} / {heard(b, 440.0):.3f}")
+
+        a.ptt("Technik", False)
+        a.disconnect_line("Technik")
+        check("A's Technik line shows as disconnected", line(a, "Technik")["state"] == "off" and not line(a, "Technik")["enabled"])
+        gone = wait(lambda: "human_regie" not in on_line(b, "Technik") and "human_regie" in on_line(b, "Regie"), 25)
+        check("B no longer sees A on Technik, still on Regie", gone, f"Technik {on_line(b, 'Technik')}, Regie {on_line(b, 'Regie')}")
+        check("the other line keeps running", line(a, "Regie")["state"] == "connected")
+        a.connect_line("Technik")
+        back = wait(lambda: line(a, "Technik")["state"] == "connected" and "human_regie" in on_line(b, "Technik"), 30)
+        check("A connects Technik again and B sees A there", back, f"{line(a, 'Technik')['state']}, {on_line(b, 'Technik')}")
+        b.ptt("Technik", False)
+        a.toggle_latch("Technik")
+        check("and talking works again on the reconnected line", wait(lambda: heard(b, 440.0) > 0.02, 10))
+        a.toggle_latch("Technik")
     finally:
         a.stop()
         b.stop()

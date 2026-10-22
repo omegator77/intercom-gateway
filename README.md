@@ -36,6 +36,7 @@ pip install -e ".[client]"
 intercom-client            # Oberfläche; beim ersten Start öffnen sich die Einstellungen
 ```
 
+- „Trennen“ oben beendet alles; auf jeder Leitungskarte gibt es zusätzlich „Trennen“/„Verbinden“ nur für diese Leitung.
 - Einstellungen: Server und Konto, Leitungen hinzufügen (nach dem Login aus der Liste), pro Leitung Sprechen- und
   Dauer-Taste, Mikrofon und Kopfhörer, Taste für „Alles stumm". Beispiel: `client.example.toml`.
 - Die Reihenfolge der Leitungen ist die Tastennummer für Companion/Stream Deck (noch nicht angebunden).
