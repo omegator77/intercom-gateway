@@ -1,7 +1,8 @@
-"""Microphone processing: echo cancellation, noise suppression and automatic gain.
+"""Microphone processing: echo cancellation and noise suppression.
 
 This wraps the WebRTC audio processing module (the same family of algorithms the browser uses; PyPI package
-`aec-audio-processing`). Echo cancellation needs to know what is being played to the speakers (the "reverse
+`aec-audio-processing`). Its automatic gain control is not used: it only adds a fixed gain with a limiter. The
+client's own leveller (agc.py) does the level control. Echo cancellation needs to know what is being played to the speakers (the "reverse
 stream"): the hub hands in every output block, and the module works out the delay between playing a sound and
 hearing it in the microphone by itself.
 
@@ -30,8 +31,8 @@ def _from_bytes(b: bytes) -> np.ndarray:
 
 
 class MicProcessor:
-    def __init__(self, echo_cancellation: bool, noise_suppression: int, auto_gain: bool):
-        if not (echo_cancellation or noise_suppression or auto_gain):
+    def __init__(self, echo_cancellation: bool, noise_suppression: int):
+        if not (echo_cancellation or noise_suppression):
             raise ValueError("nothing to process")  # the module returns silence when everything is off
         try:
             from aec_audio_processing import AudioProcessor
@@ -39,10 +40,10 @@ class MicProcessor:
             raise ProcessingUnavailable(
                 f"Echo-/Rauschunterdrückung nicht verfügbar ({type(e).__name__}: {e}). "
                 "Installieren mit: pip install aec-audio-processing") from e
-        self.echo, self.noise, self.agc = echo_cancellation, noise_suppression, auto_gain
+        self.echo, self.noise = echo_cancellation, noise_suppression
         self.needs_reverse = echo_cancellation
         self._ap = AudioProcessor(enable_aec=echo_cancellation, enable_ns=noise_suppression > 0,
-                                  ns_level=max(noise_suppression - 1, 0), enable_agc=auto_gain, agc_mode=1,
+                                  ns_level=max(noise_suppression - 1, 0), enable_agc=False, agc_mode=1,
                                   enable_vad=False)
         self._ap.set_stream_format(SR, 1, SR, 1)
         self._ap.set_reverse_stream_format(SR, 1)

@@ -225,13 +225,13 @@ def rms(x):
 
 def test_processor_refuses_to_start_with_everything_off():
     with pytest.raises(ValueError):
-        MicProcessor(False, 0, False)
+        MicProcessor(False, 0)
 
 
 def test_echo_cancellation_takes_the_far_end_out_of_the_microphone():
     far = speech_like(10, 1)
     mic = echo_of(far)
-    p = MicProcessor(echo_cancellation=True, noise_suppression=0, auto_gain=False)
+    p = MicProcessor(echo_cancellation=True, noise_suppression=0)
     out = np.zeros_like(mic)
     for i in range(0, len(mic) - FRAME + 1, FRAME):
         p.reverse(far[i:i + FRAME])
@@ -242,7 +242,7 @@ def test_echo_cancellation_takes_the_far_end_out_of_the_microphone():
 
 def test_noise_suppression_alone_keeps_speech_and_needs_no_far_end():
     near = speech_like(5, 2)
-    p = MicProcessor(echo_cancellation=False, noise_suppression=2, auto_gain=False)
+    p = MicProcessor(echo_cancellation=False, noise_suppression=2)
     assert not p.needs_reverse
     p.reverse(near[:FRAME])  # ignored, must not fail
     out = np.concatenate([p.process(near[i:i + FRAME]) for i in range(0, len(near) - FRAME + 1, FRAME)])
@@ -251,7 +251,7 @@ def test_noise_suppression_alone_keeps_speech_and_needs_no_far_end():
 
 
 def test_blocks_of_other_sizes_come_out_the_same_length():
-    p = MicProcessor(echo_cancellation=True, noise_suppression=1, auto_gain=False)
+    p = MicProcessor(echo_cancellation=True, noise_suppression=1)
     x = speech_like(2, 3)
     got = 0
     for i in range(0, len(x) - 441, 441):
@@ -442,9 +442,13 @@ def test_processing_can_be_switched_on_and_off_while_running():
     assert hub.processing == "on" and hub._proc.echo and hub._proc.noise == 2
     old = hub._proc
     hub.set_processing(False, 0, True)
-    assert hub._proc is not old and not hub._proc.echo and hub._proc.agc and hub.processing == "on"
+    assert hub._proc is old or hub._proc is None  # AGC alone needs no echo/noise processor
+    assert hub._agc is not None and hub.processing == "on" and hub.agc_gain_db == 0.0
+    leveller = hub._agc
+    hub.set_processing(True, 1, True)
+    assert hub._agc is leveller and hub._proc is not None  # the running leveller keeps its state
     hub.set_processing(False, 0, False)
-    assert hub._proc is None and hub.processing == "off"
+    assert hub._proc is None and hub._agc is None and hub.processing == "off" and hub.agc_gain_db is None
 
 
 def test_switching_processing_on_without_the_library_reports_it_and_keeps_the_audio_going(monkeypatch):
@@ -459,18 +463,46 @@ def test_switching_processing_on_without_the_library_reports_it_and_keeps_the_au
     assert hub.processing == "off"  # the old error is gone once nothing is asked for
 
 
-def test_the_automatic_gain_lifts_quiet_speech_and_limits_loud_peaks():
-    def run(peak):
-        x = speech_like(8, 1) * (peak / 0.3)
-        p = MicProcessor(False, 0, True)
-        out = np.concatenate([p.process(x[i:i + FRAME]) for i in range(0, len(x) - FRAME + 1, FRAME)])
-        seg = slice(SR * 4, SR * 8)
-        return 20 * np.log10(rms(out[seg]) / rms(x[seg])), float(np.max(np.abs(out[seg])))
+def test_the_hub_levels_a_quiet_and_a_loud_talker_to_the_same_level_when_auto_gain_is_on():
+    async def go(peak):
+        hub = AudioHub(ClientAudio(backend="synthetic", auto_gain=True, agc_target_dbfs=-20, agc_max_gain_db=30))
+        la = SharedLineAudio(LineControl("Regie"), hub, asyncio.get_running_loop(), 60)
+        hub.attach(la)
+        la.control.talk.press()
+        x = speech_like(10, 1) * (peak / 0.3)
+        sent = []
+        for i in range(0, len(x) - BLOCK + 1, BLOCK):
+            hub.process_mic(x[i:i + BLOCK])
+            got = la.track._take()
+            if got is not None:
+                sent.append(got)
+        out = np.concatenate(sent)[SR * 5:]
+        d = 20 * np.log10(np.sqrt(np.mean(np.square(out[: len(out) // BLOCK * BLOCK].reshape(-1, BLOCK)), axis=1)) + 1e-9)
+        return float(d[d > -40].mean()), hub.agc_gain_db
 
-    quiet_gain, _ = run(0.01)
-    loud_gain, loud_peak = run(0.9)
-    assert 3.0 < quiet_gain < 12.0  # about +7 dB, measured
-    assert loud_gain < quiet_gain and loud_peak <= 1.0  # less at full scale, never over
+    quiet, quiet_gain = asyncio.run(go(0.03))
+    loud, loud_gain = asyncio.run(go(0.9))
+    assert abs(quiet - loud) < 5.0  # about 30 dB apart at the microphone, within a few dB after the leveller
+    assert quiet_gain > loud_gain + 10
+
+
+def test_the_leveller_is_configured_from_the_audio_settings():
+    c = cfg(audio={"backend": "synthetic", "auto_gain": True, "agc_target_dbfs": -24, "agc_max_gain_db": 18})
+    hub = AudioHub(c.audio)
+    assert (hub._agc.target_db, hub._agc.max_gain_db) == (-24.0, 18.0)
+    assert cfg().audio.agc_target_dbfs == -20 and cfg().audio.agc_max_gain_db == 25
+
+
+@pytest.mark.parametrize("audio, message", [
+    ({"agc_target_dbfs": -5}, "agc_target_dbfs"),
+    ({"agc_target_dbfs": -40}, "agc_target_dbfs"),
+    ({"agc_target_dbfs": -20.5}, "agc_target_dbfs"),
+    ({"agc_max_gain_db": 41}, "agc_max_gain_db"),
+    ({"agc_max_gain_db": -1}, "agc_max_gain_db"),
+])
+def test_bad_leveller_settings_are_rejected(audio, message):
+    with pytest.raises(ConfigError, match=message):
+        cfg(audio={"backend": "synthetic", **audio})
 
 
 def test_the_programme_line_gets_no_microphone_even_if_somebody_set_it_to_talk():
@@ -519,7 +551,7 @@ def test_the_engine_changes_the_microphone_live_and_remembers_what_it_was_told_b
         assert eng.hub._proc is not None and eng.hub._proc.echo and eng.hub._proc.noise == 4
         eng.set_mic_gain_db(-3)
         eng.set_processing(agc=True)
-        assert eng.hub.mic_gain_db == -3.0 and eng.hub._proc.agc and eng.hub._proc.echo
+        assert eng.hub.mic_gain_db == -3.0 and eng.hub._agc is not None and eng.hub._proc.echo
         snap = eng.snapshot()
         assert (snap["mic_gain_db"], snap["echo"], snap["noise"], snap["agc"]) == (-3.0, True, 4, True)
     finally:

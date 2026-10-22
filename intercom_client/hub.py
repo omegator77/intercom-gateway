@@ -19,6 +19,7 @@ import numpy as np
 
 from gateway.audio import DeviceError, DeviceInputTrack, Level, MixedPlayout, SR, db_to_lin, match_device, soft_limit
 
+from .agc import SpeechLeveller
 from .config import ClientAudio, ClientDim
 from .processing import MicProcessor, ProcessingUnavailable
 from .talk import TalkControl
@@ -121,6 +122,7 @@ class AudioHub:
         self._dimmer = Dimmer(ClientDim(amount_db=0))  # off until the engine sets the configured values
         self.processing_error: str | None = None  # why the configured echo/noise processing is not running
         self._proc: MicProcessor | None = None
+        self._agc: SpeechLeveller | None = None
         self.set_processing(cfg.echo_cancellation, cfg.noise_suppression, cfg.auto_gain)
         self.mic_gain_db = cfg.mic_gain_db
         self._mic_gain = db_to_lin(cfg.mic_gain_db)
@@ -146,17 +148,26 @@ class AudioHub:
         self._mic_gain = db_to_lin(self.mic_gain_db)
 
     def set_processing(self, echo: bool, noise: int, agc: bool) -> None:
-        """Switch echo cancellation / noise suppression / automatic gain while running. A new processor is built
-        and swapped in (the old one is used until then); with everything off the signal is passed on untouched."""
+        """Switch echo cancellation / noise suppression / automatic level control while running. New processors are
+        built and swapped in (the old ones are used until then); with everything off the signal is untouched."""
         self.processing_error = None
         proc = None
-        if echo or noise or agc:
+        if echo or noise:
             try:
-                proc = MicProcessor(echo, noise, agc)
+                proc = MicProcessor(echo, noise)
             except ProcessingUnavailable as e:
                 self.processing_error = str(e)
                 log.warning("%s", e)
         self._proc = proc
+        if not agc:
+            self._agc = None
+        elif self._agc is None:  # keep a running leveller (and its learned gain) when only the others change
+            self._agc = SpeechLeveller(self.cfg.agc_target_dbfs, float(self.cfg.agc_max_gain_db))
+
+    @property
+    def agc_gain_db(self) -> float | None:
+        """The gain the level control applies right now, or None when it is off."""
+        return self._agc.gain_db if self._agc else None
 
     def set_dim(self, dim: ClientDim) -> None:
         self._dimmer = Dimmer(dim)
@@ -175,7 +186,7 @@ class AudioHub:
     @property
     def processing(self) -> str:
         """'off', 'on' or the reason the configured processing could not start."""
-        return self.processing_error or ("on" if self._proc else "off")
+        return self.processing_error or ("on" if (self._proc or self._agc) else "off")
 
     def _speech_active(self) -> bool:
         """Is somebody speaking on a line other than the programme line (to me, or me into it)?"""
@@ -197,6 +208,8 @@ class AudioHub:
         mic = soft_limit(block * self._mic_gain) if self._mic_gain != 1.0 else block
         if self._proc is not None:
             mic = self._proc.process(mic)
+        if self._agc is not None:
+            mic = self._agc.process(mic)  # after echo/noise processing: it levels the cleaned speech
         self.mic_level.update(mic)
         silence = self._silence[: len(mic)]
         muted = self.global_mute

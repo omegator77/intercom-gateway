@@ -176,7 +176,7 @@ class ClientSettingsDialog(QDialog):
         self.noise = QComboBox()
         for label, value in NOISE_LEVELS:
             self.noise.addItem(label, value)
-        self.agc = QCheckBox("Automatische Pegelregelung")
+        self.agc = QCheckBox("Automatische Pegelregelung (Auto-Pegel)")
         self.echo.setChecked(bool(audio.get("echo_cancellation", False)))
         self.noise.setCurrentIndex(max(0, self.noise.findData(int(audio.get("noise_suppression", 0)))))
         self.agc.setChecked(bool(audio.get("auto_gain", False)))
@@ -184,6 +184,18 @@ class ClientSettingsDialog(QDialog):
         fp.addRow("", self.echo)
         fp.addRow("Rauschunterdrückung", self.noise)
         fp.addRow("", self.agc)
+        self.agc_target = QSpinBox()
+        self.agc_target.setRange(-35, -10)
+        self.agc_target.setSuffix(" dBFS")
+        self.agc_target.setValue(int(audio.get("agc_target_dbfs", -20)))
+        self.agc_target.setToolTip("Pegel, auf den die Sprache geregelt wird (Standard −20 dBFS)")
+        self.agc_max = QSpinBox()
+        self.agc_max.setRange(0, 40)
+        self.agc_max.setSuffix(" dB")
+        self.agc_max.setValue(int(audio.get("agc_max_gain_db", 25)))
+        self.agc_max.setToolTip("Mehr als das hebt der Auto-Pegel nie an (Standard 25 dB)")
+        fp.addRow("Auto-Pegel Ziel", self.agc_target)
+        fp.addRow("Auto-Pegel max. Verstärkung", self.agc_max)
         proc_note = QLabel("Mit Headset alles aus lassen. Bei Lautsprechern die Echo-Unterdrückung einschalten, sonst "
                            "gibt es Rückkopplung.")
         proc_note.setWordWrap(True)
@@ -425,6 +437,12 @@ class ClientSettingsDialog(QDialog):
                                     ("auto_gain", agc, False)):
             if value == default:
                 audio.pop(key, None)  # keep the file free of defaults
+            else:
+                audio[key] = value
+        for key, value, default in (("agc_target_dbfs", self.agc_target.value(), -20),
+                                    ("agc_max_gain_db", self.agc_max.value(), 25)):
+            if value == default:
+                audio.pop(key, None)
             else:
                 audio[key] = value
         dim = {}

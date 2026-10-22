@@ -260,9 +260,10 @@ class MainWindow(QMainWindow):
             self.noise_box.addItem(f"Rauschen: {label}", value)
         self.noise_box.setToolTip("Rauschunterdrückung")
         self.agc_box = QCheckBox("Auto-Pegel")
-        self.agc_box.setToolTip("Automatische Pegelregelung (WebRTC): hebt die Sprache um etwa 7 dB an und begrenzt "
-                                "laute Spitzen. Kein vollständiger Pegelausgleich - den Grundpegel stellst du mit dem "
-                                "Regler ein.")
+        self.agc_box.setToolTip("Automatische Pegelregelung: regelt deine Sprache auf einen festen Ziel-Pegel, leise "
+                                "Stimme wird angehoben, laute abgesenkt. In Sprechpausen bleibt die Verstärkung stehen "
+                                "(Rauschen wird nicht hochgezogen), Spitzen werden sofort begrenzt. Der Regler links "
+                                "wirkt davor.")
         for w in (self.mic_gain, self.echo_box, self.noise_box, self.agc_box):
             w.setFocusPolicy(Qt.NoFocus)
             w.setEnabled(False)
@@ -416,6 +417,8 @@ class MainWindow(QMainWindow):
             self.mic_gain.setValue(gain)
             self.mic_gain.blockSignals(False)
         self.mic_gain_text.setText(f"{gain:+d} dB")
+        gain = s.get("agc_gain_db")
+        self.agc_box.setText("Auto-Pegel" if gain is None else f"Auto-Pegel ({gain:+.0f} dB)")
         for box, value in ((self.echo_box, s["echo"]), (self.agc_box, s["agc"])):
             if box.isChecked() != value:
                 box.blockSignals(True)

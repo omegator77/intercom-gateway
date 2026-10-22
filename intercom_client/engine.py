@@ -374,6 +374,7 @@ class ClientEngine:
             "echo": self.echo,
             "noise": self.noise,
             "agc": self.agc,
+            "agc_gain_db": self.hub.agc_gain_db if self.hub else None,
             "dimmed": bool(self.hub and self.hub.dimmed),
             "dim_db": self.cfg.dim.amount_db,
             "processing": self.hub.processing if self.hub else "off",

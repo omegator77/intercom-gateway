@@ -32,7 +32,9 @@ class ClientAudio:
     # Microphone processing (WebRTC audio processing, the same family the browser uses). All off = unprocessed.
     echo_cancellation: bool = False  # for speakers instead of a headset
     noise_suppression: int = 0  # 0 off, 1 low, 2 moderate, 3 high, 4 very high
-    auto_gain: bool = False
+    auto_gain: bool = False  # the speech leveller (agc.py)
+    agc_target_dbfs: int = -20  # level the leveller aims at, measured on speech
+    agc_max_gain_db: int = 25  # the most it may add
 
 
 @dataclass(frozen=True)
@@ -134,10 +136,16 @@ def parse_client_config(data: Mapping, env: Mapping[str, str] | None = None,
     for key in ("echo_cancellation", "auto_gain"):
         if not isinstance(a.get(key, False), bool):
             raise ConfigError(f"[audio] {key} must be true or false")
+    target = a.get("agc_target_dbfs", -20)
+    if not isinstance(target, int) or isinstance(target, bool) or not -35 <= target <= -10:
+        raise ConfigError("[audio] agc_target_dbfs must be a whole number between -35 and -10")
+    max_gain = a.get("agc_max_gain_db", 25)
+    if not isinstance(max_gain, int) or isinstance(max_gain, bool) or not 0 <= max_gain <= 40:
+        raise ConfigError("[audio] agc_max_gain_db must be a whole number between 0 and 40")
     audio = ClientAudio(backend, a.get("input_device") or None, a.get("output_device") or None, in_ch,
                         tuple(out_ch), _gain(a.get("mic_gain_db", 0.0), "[audio] mic_gain_db"),
                         _gain(a.get("output_gain_db", 0.0), "[audio] output_gain_db"), playout,
-                        bool(a.get("echo_cancellation", False)), ns, bool(a.get("auto_gain", False)))
+                        bool(a.get("echo_cancellation", False)), ns, bool(a.get("auto_gain", False)), target, max_gain)
 
     d = data.get("dim") or {}
     amount = d.get("amount_db", -14)

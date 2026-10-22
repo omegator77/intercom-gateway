@@ -15,7 +15,9 @@ playout_ms = 60
 # Aufbereitung des Mikrofons (alles aus = unverändert, für Headset):
 # echo_cancellation = false  # true bei Lautsprechern statt Kopfhörer
 # noise_suppression = 0      # 0 aus, 1 niedrig, 2 mittel, 3 hoch, 4 sehr hoch
-# auto_gain = false          # automatische Pegelregelung
+# auto_gain = false          # Auto-Pegel: regelt die Sprache auf einen festen Pegel
+# agc_target_dbfs = -20      # Ziel-Pegel der Sprache (-35..-10)
+# agc_max_gain_db = 25       # so viel hebt der Auto-Pegel höchstens an (0..40)
 
 [dim]                        # Programm-Leitung absenken (Standardwerte wie in der Web-App)
 # amount_db = -14            # 0 = nie dimmen

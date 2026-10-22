@@ -48,12 +48,15 @@ intercom-client            # Oberfläche; beim ersten Start öffnen sich die Ein
 - Die anderen sehen dich unter dem Namen deines Kontos (Alias in den User Settings der Web-App).
 - **Im Hauptfenster** lassen sich Mikrofon-Pegel, Echo-Unterdrückung, Rauschunterdrückung und Auto-Pegel **während
   der Verbindung** ändern, ohne dass eine Leitung neu verbindet. Die Werte werden für den nächsten Start gespeichert.
-  Der Auto-Pegel (WebRTC-AGC) hebt Sprache um etwa 7 dB an und begrenzt laute Spitzen; er gleicht keine großen
-  Pegelunterschiede aus, den Grundpegel stellt man mit dem Regler ein.
+  Der **Auto-Pegel** ist ein eigener Sprach-Pegelausgleich (nicht der WebRTC-AGC, der nur einen festen Zuschlag gibt):
+  Er misst die Sprachlautstärke und regelt sie auf einen Ziel-Pegel (Standard −20 dBFS), leise Stimmen werden
+  angehoben (höchstens 25 dB), laute abgesenkt. In Sprechpausen bleibt die Verstärkung stehen, damit Rauschen nicht
+  hochgezogen wird; Spitzen werden sofort begrenzt. Er arbeitet nach Echo-/Rauschunterdrückung und nach dem
+  Mikrofon-Pegel-Regler (der als Grundeinstellung davor wirkt). Ziel und Obergrenze stehen in den Einstellungen.
 - Die **Programm-Leitung** ist nur zum Hören: Sie hat keine Sprechen-/Dauer-Tasten, und weder Tasten noch Companion
   sprechen dort hinein.
 - **Mikrofon-Aufbereitung** (Einstellungen → Mikrofon-Aufbereitung): Echo-Unterdrückung, Rauschunterdrückung (4 Stufen)
-  und automatische Pegelregelung, mit den Voreinstellungen „Headset" (alles aus, beste Qualität) und „Lautsprecher"
+  und Auto-Pegel, mit den Voreinstellungen „Headset" (alles aus, beste Qualität) und „Lautsprecher"
   (Echo + Rauschen). Das ist das WebRTC-Audiomodul (Paket `aec-audio-processing`), dieselbe Algorithmen-Familie wie im
   Browser. Mit Kopfhörer alles aus lassen; bei Lautsprechern muss die Echo-Unterdrückung an sein.
 - **Programm-Leitung dimmen** (Einstellungen → Programm-Leitung dimmen): wie in der Web-App wird die Programm-Leitung

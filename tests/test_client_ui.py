@@ -491,3 +491,43 @@ def test_the_programme_tile_has_no_talk_buttons(app, tmp_path, monkeypatch):
         assert not win.engine.controls["Technik"].talk.held
     finally:
         win.close()
+
+
+# ---------------------------------------------------------------- the level control (Auto-Pegel)
+
+def test_settings_save_the_leveller_target_and_maximum_only_when_they_differ_from_the_defaults(app, tmp_path):
+    d = dialog(tmp_path)
+    assert d.agc_target.value() == -20 and d.agc_max.value() == 25
+    d.pw.setText("x")
+    d._accept()
+    assert not {"agc_target_dbfs", "agc_max_gain_db"} & set(d.result_data["audio"])
+
+    d = dialog(tmp_path)
+    d.pw.setText("x")
+    d.agc.setChecked(True)
+    d.agc_target.setValue(-24)
+    d.agc_max.setValue(18)
+    d._accept()
+    audio = d.result_data["audio"]
+    assert audio["auto_gain"] is True and audio["agc_target_dbfs"] == -24 and audio["agc_max_gain_db"] == 18
+    tomlio.save(tmp_path / "client.toml", d.result_data)
+    again = dialog(tmp_path, with_cfg=False)
+    assert again.agc.isChecked() and again.agc_target.value() == -24 and again.agc_max.value() == 18
+
+
+def test_the_main_window_shows_what_the_level_control_is_doing(app, tmp_path):
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    win = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)
+    try:
+        win.connect_now()
+        assert pump(app, until=lambda: win.mic_gain.isEnabled())
+        assert win.agc_box.text() == "Auto-Pegel"  # off: no number
+        win.agc_box.setChecked(True)
+        assert pump(app, until=lambda: win.agc_box.text().startswith("Auto-Pegel (") and "dB" in win.agc_box.text())
+        # the synthetic microphone tone is level enough to get speech detected; whatever the gain is, it is shown
+        assert win.engine.hub.agc_gain_db is not None
+        win.agc_box.setChecked(False)
+        assert pump(app, until=lambda: win.agc_box.text() == "Auto-Pegel")
+    finally:
+        win.close()
