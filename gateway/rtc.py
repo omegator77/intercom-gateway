@@ -63,7 +63,9 @@ class LineConnection:
         relay_type: str | None = None,  # None = send no relayType, i.e. behave like the browser frontend
         recorder=None,  # debugrec.Recorder or None
         opus: tuple[str, int] = (opus_settings.DEFAULT_MODE, opus_settings.DEFAULT_KBPS),  # (mode, kbit/s)
+        stereo_rx: bool = False,  # hand on_pcm (n, 2) L/R frames instead of a mono downmix
     ):
+        self._stereo_rx = stereo_rx
         self._recorder = recorder
         self._opus = opus
         self._relay_type = relay_type
@@ -191,11 +193,15 @@ class LineConnection:
             return
         for frame in frames:
             ch = len(frame.layout.channels)
-            pcm = frame.to_ndarray().reshape(-1, ch).astype(np.float32).mean(axis=1) / 32768.0
+            chans = frame.to_ndarray().reshape(-1, ch).astype(np.float32) / 32768.0
+            pcm = chans.mean(axis=1)
             self.frames_in += 1
             if rec:
                 rec.rx(pcm)
-            self._on_pcm(pcm, packet.ssrc)
+            if self._stereo_rx:
+                self._on_pcm(chans[:, :2] if ch >= 2 else np.stack([pcm, pcm], axis=1), packet.ssrc)
+            else:
+                self._on_pcm(pcm, packet.ssrc)
 
     async def heartbeat(self) -> int:
         r = await self._http.get(f"{API}/heartbeat/{self.session_id}", headers=self._headers)

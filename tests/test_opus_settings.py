@@ -180,3 +180,76 @@ def test_a_real_aiortc_sender_has_the_attribute_we_rely_on():
         assert isinstance(sender._RTCRtpSender__encoder, opus.ConfiguredOpusEncoder)
         await pc.close()
     asyncio.run(go())
+
+
+# ---------------------------------------------------------------- stereo playback, limiter, per-line buffer
+
+from gateway.audio import DriftBuffer, MixedPlayout, SR, soft_limit
+
+
+def test_config_stereo_output_limiter_and_line_playout():
+    c = line()
+    assert (c.stereo_output, c.limiter, c.playout_ms) == (False, True, None)
+    c = line(stereo_output=True, output_channels=[2, 3], limiter=False, playout_ms=120)
+    assert (c.stereo_output, c.output_channels, c.limiter, c.playout_ms) == (True, (2, 3), False, 120)
+    with pytest.raises(ConfigError, match="exactly two output_channels"):
+        line(stereo_output=True, output_channels=[0])
+    with pytest.raises(ConfigError, match="limiter must be"):
+        line(limiter="on")
+    for bad in (10, 900, "x"):
+        with pytest.raises(ConfigError, match="playout_ms"):
+            line(playout_ms=bad)
+
+
+def test_soft_limiter_is_transparent_below_the_knee_and_never_exceeds_full_scale():
+    quiet = np.linspace(-0.8, 0.8, 1000).astype(np.float32)
+    assert np.array_equal(soft_limit(quiet), quiet)
+    loud = np.linspace(-6.0, 6.0, 4001).astype(np.float32)
+    out = soft_limit(loud)
+    assert np.all(np.abs(out) <= 1.0) and out.dtype == np.float32
+    assert np.all(np.diff(out) >= 0)  # monotonic: no folding back
+    assert abs(soft_limit(np.array([0.85], np.float32))[0] - 0.85) < 0.02  # gentle just above the knee
+    assert soft_limit(np.array([np.inf, -np.inf], np.float32)).tolist() == [1.0, -1.0]
+    assert soft_limit(np.zeros(0, np.float32)).size == 0
+
+
+def test_stereo_drift_buffer_keeps_left_and_right_apart():
+    b = DriftBuffer(target_ms=20, channels=2)
+    left = np.full(SR // 4, 0.3, np.float32)
+    right = np.full(SR // 4, -0.6, np.float32)
+    b.write(np.stack([left, right], axis=1))
+    out = b.read(2000)
+    assert out.shape == (2000, 2)
+    assert np.allclose(out[:, 0], 0.3, atol=1e-4) and np.allclose(out[:, 1], -0.6, atol=1e-4)
+
+
+def test_stereo_buffer_centres_a_mono_talker_and_mono_buffer_mixes_stereo_down():
+    s = DriftBuffer(target_ms=20, channels=2)
+    s.write(np.full(SR // 4, 0.2, np.float32))
+    out = s.read(1000)
+    assert np.allclose(out[:, 0], 0.2, atol=1e-4) and np.allclose(out[:, 1], 0.2, atol=1e-4)
+    m = DriftBuffer(target_ms=20)
+    m.write(np.stack([np.full(SR // 4, 0.2, np.float32), np.full(SR // 4, 0.6, np.float32)], axis=1))
+    assert np.allclose(m.read(1000), 0.4, atol=1e-4)
+
+
+def test_mixed_playout_sums_stereo_talkers_per_channel_and_scales_its_limit_with_the_buffer():
+    mp = MixedPlayout(target_ms=400, channels=2)
+    mp.write(np.stack([np.full(SR * 9 // 20, 0.1, np.float32), np.zeros(SR * 9 // 20, np.float32)], axis=1), key=1)
+    mp.write(np.stack([np.full(SR * 9 // 20, 0.2, np.float32), np.full(SR * 9 // 20, 0.5, np.float32)], axis=1), key=2)
+    out = mp.read(1000)
+    assert out.shape == (1000, 2)
+    assert np.allclose(out[:, 0], 0.3, atol=1e-4) and np.allclose(out[:, 1], 0.5, atol=1e-4)
+    assert mp.streams == 2 and mp.overruns == 0  # a 400 ms target fits: the old fixed 300 ms ceiling would overrun
+
+
+def test_each_line_can_have_its_own_playout_buffer():
+    from gateway.audio import SyntheticLineAudio
+    from gateway.config import AudioCfg
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        default = SyntheticLineAudio(line(), AudioCfg("portaudio", 60), loop)
+        custom = SyntheticLineAudio(line(playout_ms=150), AudioCfg("portaudio", 60), loop)
+        assert default.out_buf._target_ms == 60 and custom.out_buf._target_ms == 150
+    asyncio.run(go())

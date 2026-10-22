@@ -154,3 +154,22 @@ def test_line_dialog_defaults_for_an_old_line_and_stereo_needs_two_channels(app)
         d._build()
     d.in_ch.setText("1, 2")
     assert d._build()["stereo"] is True
+
+
+def test_line_dialog_saves_stereo_output_limiter_and_buffer(app):
+    d = _dialog({**BASE_LINE, "output_device": "DVS Transmit 1-2", "stereo_output": True,
+                 "limiter": False, "playout_ms": 120})
+    assert d.stereo_out.isChecked() and not d.limiter.isChecked() and d.playout.value() == 120
+    line = d._build()
+    assert line["stereo_output"] is True and line["limiter"] is False and line["playout_ms"] == 120
+
+    d.stereo_out.setChecked(False)
+    d.limiter.setChecked(True)
+    d.playout.setValue(0)
+    line = d._build()
+    assert not {"stereo_output", "limiter", "playout_ms"} & set(line)  # defaults stay out of the file
+
+    d.stereo_out.setChecked(True)
+    d.out_ch.setText("1")
+    with pytest.raises(ValueError, match="zwei"):
+        d._build()

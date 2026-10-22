@@ -162,16 +162,31 @@ class LineDialog(QDialog):
         f_in.addRow("Verstärkung", self.in_gain)
         f_in.addRow("Klang optimiert für", self.opus_mode)
         f_in.addRow("Datenrate", self.opus_kbps)
+        self.limiter = QCheckBox("Weicher Begrenzer (statt hartem Übersteuern, gilt für Ein- und Ausgang)")
+        self.limiter.setChecked(bool(line.get("limiter", True)))
+        f_in.addRow("", self.limiter)
 
         box_out = QGroupBox("Ausgang — Audio der Leitung ins Dante-Netz")
         f_out = QFormLayout(box_out)
         self.out_dev = DeviceCombo(outputs, line.get("output_device"))
         self.out_ch = QLineEdit(channels_text(line.get("output_channels"), "1, 2"))
-        self.out_ch.setToolTip("Die Leitung ist Mono und wird auf alle genannten Kanäle gelegt")
+        self.out_ch.setToolTip("Die Leitung wird auf alle genannten Kanäle gelegt — Mono, außer bei „Stereo ausgeben“")
         self.out_gain = _gain_spin(line.get("out_gain_db", 0.0))
+        self.stereo_out = QCheckBox("Stereo ausgeben (links/rechts bleiben getrennt, genau zwei Kanäle)")
+        self.stereo_out.setChecked(bool(line.get("stereo_output", False)))
+        self.playout = QSpinBox()
+        self.playout.setRange(0, 500)
+        self.playout.setSingleStep(10)
+        self.playout.setSuffix(" ms")
+        self.playout.setSpecialValueText("wie Standard")
+        self.playout.setValue(int(line.get("playout_ms") or 0))
+        self.playout.setToolTip("Größerer Puffer = stabiler bei schwankendem Netz, aber mehr Verzögerung. "
+                                "Programm-Leitung z. B. 120 ms, Kommando-Leitung 40–60 ms.")
         f_out.addRow("Gerät", self.out_dev)
         f_out.addRow("Kanäle", self.out_ch)
+        f_out.addRow("", self.stereo_out)
         f_out.addRow("Verstärkung", self.out_gain)
+        f_out.addRow("Puffer", self.playout)
         self._boxes = (box_in, box_out)  # not in the layout in test mode: without this reference Qt deletes them
 
         self.tone = None
@@ -338,8 +353,13 @@ class LineDialog(QDialog):
             if self.stereo.isChecked() and len(line["input_channels"]) != 2:
                 raise ValueError("Für Stereo genau zwei Eingangskanäle angeben, z. B. „1, 2“.")
             line["output_channels"] = parse_channels(self.out_ch.text() or "1, 2")
+            if self.stereo_out.isChecked() and len(line["output_channels"]) != 2:
+                raise ValueError("Für Stereo-Ausgabe genau zwei Ausgangskanäle angeben, z. B. „1, 2“.")
         line["in_gain_db"] = round(self.in_gain.value(), 1)
         for key, value, default in (("stereo", self.stereo.isChecked(), False),
+                                    ("stereo_output", self.stereo_out.isChecked(), False),
+                                    ("limiter", self.limiter.isChecked(), True),
+                                    ("playout_ms", self.playout.value(), 0),
                                     ("opus_mode", self.opus_mode.currentData(), "voip"),
                                     ("opus_bitrate_kbps", self.opus_kbps.value(), 96)):
             if value == default:

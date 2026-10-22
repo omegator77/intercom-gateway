@@ -43,6 +43,9 @@ class LineCfg:
     relay_type: str = "ssrc-rewrite"  # what the browser frontend uses; "mixed" = server-side mix (has a known defect, see docs)
     # What is sent into the line. The defaults are what the gateway always did: mono, 96 kbit/s, tuned for speech.
     stereo: bool = False  # send exactly two input channels as a stereo pair instead of mixing them to mono
+    stereo_output: bool = False  # play the line back in stereo on exactly two output channels (L/R kept)
+    limiter: bool = True  # soft limiter instead of hard clipping, on what is sent and what is played
+    playout_ms: int | None = None  # jitter buffer for this line; None = the [audio] default
     opus_mode: str = "voip"  # "voip" = optimised for speech, "audio" = for music / programme sound
     opus_bitrate_kbps: int = 96
 
@@ -155,6 +158,23 @@ def parse_config(data: Mapping, env: Mapping[str, str] | None = None,
         if stereo and len(input_channels) != 2:
             raise ConfigError(f"line {name!r}: stereo needs exactly two input_channels (e.g. [0, 1])")
 
+        stereo_out = raw.get("stereo_output", False)
+        limiter = raw.get("limiter", True)
+        for key, value in (("stereo_output", stereo_out), ("limiter", limiter)):
+            if not isinstance(value, bool):
+                raise ConfigError(f"line {name!r}: {key} must be true or false")
+        output_channels = _channels(raw.get("output_channels", [0, 1]), "output_channels", name)
+        if stereo_out and len(output_channels) != 2:
+            raise ConfigError(f"line {name!r}: stereo_output needs exactly two output_channels (e.g. [0, 1])")
+        line_playout = raw.get("playout_ms")
+        if line_playout is not None:
+            try:
+                line_playout = int(line_playout)
+            except (TypeError, ValueError):
+                raise ConfigError(f"line {name!r}: playout_ms must be a whole number") from None
+            if not 20 <= line_playout <= 500:
+                raise ConfigError(f"line {name!r}: playout_ms must be between 20 and 500")
+
         in_dev = raw.get("input_device") or None
         out_dev = raw.get("output_device") or None
         if backend == "portaudio" and not (in_dev or out_dev):
@@ -171,11 +191,14 @@ def parse_config(data: Mapping, env: Mapping[str, str] | None = None,
                 input_channels=input_channels,
                 in_gain_db=_gain(raw.get("in_gain_db", 0.0), "in_gain_db", name),
                 output_device=out_dev,
-                output_channels=_channels(raw.get("output_channels", [0, 1]), "output_channels", name),
+                output_channels=output_channels,
                 out_gain_db=_gain(raw.get("out_gain_db", 0.0), "out_gain_db", name),
                 tone_hz=float(raw["tone_hz"]) if raw.get("tone_hz") else None,
                 relay_type=relay,
                 stereo=stereo,
+                stereo_output=stereo_out,
+                limiter=limiter,
+                playout_ms=line_playout,
                 opus_mode=opus_mode,
                 opus_bitrate_kbps=_opus_bitrate(raw.get("opus_bitrate_kbps", 96), name),
             )

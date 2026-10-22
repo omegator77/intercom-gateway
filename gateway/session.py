@@ -111,7 +111,8 @@ class LineWorker:
         conn = LineConnection(self._http, token, audio.track, audio.on_remote_pcm, self._server.ice_servers,
                               relay_type=None if self.cfg.relay_type == "ssrc-rewrite" else self.cfg.relay_type,
                               recorder=self._recorder,
-                              opus=(self.cfg.opus_mode, self.cfg.opus_bitrate_kbps))
+                              opus=(self.cfg.opus_mode, self.cfg.opus_bitrate_kbps),
+                              stereo_rx=self.cfg.stereo_output)
         self.conn = conn
         try:
             try:

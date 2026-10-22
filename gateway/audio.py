@@ -51,6 +51,16 @@ class Level:
         return 20.0 * math.log10(max(self._rms, 1e-6))
 
 
+def soft_limit(x: np.ndarray, knee: float = 0.8) -> np.ndarray:
+    """Soft limiter: untouched up to `knee`, then a smooth curve that approaches (never exceeds) full scale,
+    instead of the hard flat-top clipping that crackles. Memoryless, so no added delay."""
+    a = np.abs(x)
+    if a.size == 0 or float(a.max()) <= knee:
+        return x
+    over = np.minimum(np.maximum(a - knee, 0.0) / (1.0 - knee), 20.0)
+    return np.where(a > knee, np.sign(x) * (knee + (1.0 - knee) * np.tanh(over)), x).astype(np.float32)
+
+
 def tone_amplitude(x: np.ndarray, freq: float) -> float:
     """Amplitude (0..1 full scale) of a sine at `freq` via a single-bin DFT with a Hann window."""
     n = len(x)
@@ -84,10 +94,12 @@ class DriftBuffer:
     ~10 s) - no clicks from dropping or repeating samples. A prefetch (target_ms) absorbs jitter.
     """
 
-    def __init__(self, sr: int = SR, target_ms: int = 60, max_ms: int = 300, capacity_s: float = 2.0):
+    def __init__(self, sr: int = SR, target_ms: int = 60, max_ms: int = 300, capacity_s: float = 2.0,
+                 channels: int = 1):
         self._sr = sr
         self._cap = int(sr * capacity_s)
-        self._buf = np.zeros(self._cap, np.float32)
+        self.channels = channels  # 1: samples are (n,), 2: samples are (n, 2) with L and R kept apart
+        self._buf = np.zeros(self._cap if channels == 1 else (self._cap, channels), np.float32)
         self._w = 0  # absolute number of samples written
         self._r = 0.0  # absolute (fractional) read position
         self._target = sr * target_ms / 1000.0
@@ -110,6 +122,10 @@ class DriftBuffer:
         n = len(x)
         if n == 0:
             return
+        if self.channels == 2 and x.ndim == 1:
+            x = np.stack([x, x], axis=1)  # a mono talker is centred
+        elif self.channels == 1 and x.ndim == 2:
+            x = x.mean(axis=1)
         with self._lock:
             if n >= self._cap:
                 x = x[-(self._cap - 1):]
@@ -126,7 +142,7 @@ class DriftBuffer:
                 self.overruns += 1
 
     def read(self, n: int) -> np.ndarray:
-        out = np.zeros(n, np.float32)
+        out = np.zeros(n if self.channels == 1 else (n, self.channels), np.float32)
         with self._lock:
             fill = self._w - self._r
             if self._buffering:
@@ -154,6 +170,8 @@ class DriftBuffer:
             pos = self._r + ratio * np.arange(n)
             i0 = np.floor(pos).astype(np.int64)
             frac = (pos - i0).astype(np.float32)
+            if self.channels > 1:
+                frac = frac[:, None]
             a = self._buf[i0 % self._cap]
             b = self._buf[(i0 + 1) % self._cap]
             out = a + (b - a) * frac
@@ -170,8 +188,9 @@ class MixedPlayout:
     IDLE_DROP_S = 3.0
     MAX_STREAMS = 16
 
-    def __init__(self, target_ms: int = 60):
+    def __init__(self, target_ms: int = 60, channels: int = 1):
         self._target_ms = target_ms
+        self._channels = channels
         self._streams: dict[int, DriftBuffer] = {}
         self._lock = threading.Lock()
         self._closed_underruns = 0
@@ -183,13 +202,14 @@ class MixedPlayout:
             if b is None:
                 if len(self._streams) >= self.MAX_STREAMS:
                     return
-                b = self._streams[key] = DriftBuffer(target_ms=self._target_ms)
+                b = self._streams[key] = DriftBuffer(target_ms=self._target_ms, channels=self._channels,
+                                                     max_ms=max(300, self._target_ms + 150))
         b.write(x)
 
     def read(self, n: int) -> np.ndarray:
         with self._lock:
             items = list(self._streams.items())
-        out = np.zeros(n, np.float32)
+        out = np.zeros(n if self._channels == 1 else (n, self._channels), np.float32)
         now = time.monotonic()
         for key, b in items:
             out += b.read(n)
@@ -365,7 +385,9 @@ class _BaseLineAudio:
     def __init__(self, cfg: LineCfg, audio: AudioCfg, loop: asyncio.AbstractEventLoop):
         self.cfg = cfg
         self.track = DeviceInputTrack(loop, channels=2 if cfg.stereo else 1)
-        self.out_buf = MixedPlayout(target_ms=audio.playout_ms)
+        self.out_buf = MixedPlayout(target_ms=cfg.playout_ms or audio.playout_ms,
+                                    channels=2 if cfg.stereo_output else 1)
+        self._limit = soft_limit if cfg.limiter else (lambda x: np.clip(x, -1.0, 1.0))
         self.out_level = Level()
         self._in_gain = db_to_lin(cfg.in_gain_db)
         self._out_gain = db_to_lin(cfg.out_gain_db)
@@ -417,7 +439,7 @@ class PortAudioLineAudio(_BaseLineAudio):
                         pcm = indata[:, chans]  # exactly two channels (checked in the config)
                     else:
                         pcm = indata[:, chans[0]] if len(chans) == 1 else indata[:, chans].mean(axis=1)
-                    self.track.push(pcm * self._in_gain)
+                    self.track.push(self._limit(pcm * self._in_gain))
                 except Exception:  # never let an exception kill the audio thread
                     self._log_cb_error("capture")
 
@@ -433,11 +455,17 @@ class PortAudioLineAudio(_BaseLineAudio):
 
             def out_cb(outdata, frames, time_info, status):
                 try:
-                    mono = np.clip(self.out_buf.read(frames) * self._out_gain, -1.0, 1.0)
+                    block = self._limit(self.out_buf.read(frames) * self._out_gain)
                     outdata.fill(0)
-                    for c in ochans:
-                        outdata[:, c] = mono
-                    self.out_level.update(mono)
+                    if cfg.stereo_output:  # (frames, 2): left to the first configured channel, right to the second
+                        outdata[:, ochans[0]] = block[:, 0]
+                        outdata[:, ochans[1]] = block[:, 1]
+                        mono = block.mean(axis=1)
+                    else:
+                        for c in ochans:
+                            outdata[:, c] = block
+                        mono = block
+                    self.out_level.update(block)
                     if self.recorder:
                         self.recorder.out(mono)
                 except Exception:
@@ -505,7 +533,7 @@ class SyntheticLineAudio(_BaseLineAudio):
                 self._phase += 480
             else:
                 x = np.zeros(480, np.float32)
-            self.track.push(x * self._in_gain)
+            self.track.push(self._limit(x * self._in_gain))
             n += 1
 
     async def _play(self) -> None:
@@ -515,14 +543,20 @@ class SyntheticLineAudio(_BaseLineAudio):
             delay = t0 + n * 0.01 - time.monotonic()
             if delay > 0:
                 await asyncio.sleep(delay)
-            x = np.clip(self.out_buf.read(480) * self._out_gain, -1.0, 1.0)
+            x = self._limit(self.out_buf.read(480) * self._out_gain)  # (480,) or, for stereo output, (480, 2)
             self.out_level.update(x)
             self.history.append((time.monotonic(), x))
             n += 1
 
-    def heard(self, t0: float, t1: float) -> np.ndarray:
+    def heard(self, t0: float, t1: float, channel: int | None = None) -> np.ndarray:
+        """What was played between t0 and t1 (monotonic seconds): mono, or one channel of a stereo output."""
         parts = [x for t, x in self.history if t0 <= t < t1]
-        return np.concatenate(parts) if parts else np.zeros(0, np.float32)
+        if not parts:
+            return np.zeros(0, np.float32)
+        x = np.concatenate(parts)
+        if x.ndim == 2:
+            return x.mean(axis=1) if channel is None else x[:, channel]
+        return x
 
 
 def make_line_audio(cfg: LineCfg, audio: AudioCfg, loop: asyncio.AbstractEventLoop) -> LineAudio:
