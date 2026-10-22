@@ -52,6 +52,8 @@ class LineCard(QFrame):
         self.title.setFont(f)
         self.pill = QLabel()
         self.pill.setAlignment(Qt.AlignCenter)
+        self.tag = QLabel()  # "Programm" / "Programm · gedimmt"
+        self.tag.setVisible(False)
         self.since = QLabel()
         muted(self.since)
         self.connect_btn = QPushButton("Trennen")
@@ -59,6 +61,7 @@ class LineCard(QFrame):
         self.connect_btn.setToolTip("Nur diese Leitung trennen bzw. wieder verbinden")
         head.addWidget(self.title)
         head.addWidget(self.pill)
+        head.addWidget(self.tag)
         head.addStretch(1)
         head.addWidget(self.since)
         head.addWidget(self.connect_btn)
@@ -122,6 +125,7 @@ class LineCard(QFrame):
         self.pill.setText(text)
         self.pill.setStyleSheet(f"background:{color}; color:white; border-radius:9px; padding:2px 10px; font-weight:600;")
         self.since.setText("")
+        self.tag.setVisible(False)
         self.people.setVisible(False)
         self.note.setVisible(False)
         self.talk.setStyleSheet(TALK_OFF)
@@ -144,6 +148,13 @@ class LineCard(QFrame):
         self.pill.setText(text)
         self.pill.setStyleSheet(f"background:{color}; color:white; border-radius:9px; padding:2px 10px; font-weight:600;")
         self.since.setText(f"verbunden seit {fmt_duration(s['uptime_s'])}" if s["state"] == "connected" else "")
+        program = bool(s.get("program")) and enabled
+        self.tag.setVisible(program)
+        if program:
+            dimmed = bool(s.get("dimmed"))
+            self.tag.setText("Programm · gedimmt" if dimmed else "Programm")
+            self.tag.setStyleSheet("background:#c98a00; color:white; border-radius:9px; padding:2px 10px; font-weight:600;"
+                                   if dimmed else "background:#3b6ea5; color:white; border-radius:9px; padding:2px 10px;")
         people = people_html(s["participants"]) if s["state"] == "connected" else ""
         self.people.setText(people)
         self.people.setVisible(bool(people))
@@ -330,8 +341,11 @@ class MainWindow(QMainWindow):
         hk = s["hotkeys"]
         key = f" ({s['global_mute_key'].upper()})" if s["global_mute_key"] else ""
         self.btn_mute_all.setText("Alles stumm" + key)
+        proc = s["processing"]
         self.status.setText(f"{eng.cfg.username} @ {eng.cfg.server_url}"
-                            + ("" if hk in ("ok", "off") else f"  ·  Globale Tasten nicht verfügbar: {hk}"))
+                            + ("" if hk in ("ok", "off") else f"  ·  Globale Tasten nicht verfügbar: {hk}")
+                            + ("  ·  Echo-/Rauschunterdrückung an" if proc == "on" else ""))
+        self._warn(proc if proc not in ("on", "off") else (self.engine.error or ""))
         for line in s["lines"]:
             card = self.cards.get(line["name"])
             if card:

@@ -9,10 +9,10 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                               QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QKeySequenceEdit, QLabel,
-                               QLineEdit, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+                               QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView,
+                               QKeySequenceEdit, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox, QTableWidget,
+                               QTableWidgetItem, QVBoxLayout, QWidget)
 
 from gateway import credentials, tomlio
 from gateway.auth import LoginError
@@ -20,10 +20,12 @@ from gateway.lines import AvailableLine, LinesError, fetch_available_lines
 from gateway.ui import devices
 from gateway.ui.style import muted
 
-from ..config import ConfigError, parse_client_config
+from ..config import ClientDim, ConfigError, parse_client_config
 from ..hotkeys import normalize_key
 
 SYSTEM_DEFAULT = "Systemstandard"
+NOISE_LEVELS = [("Aus", 0), ("Niedrig", 1), ("Mittel", 2), ("Hoch", 3), ("Sehr hoch", 4)]
+DIM_DELAYS = [("Sofort", 0), ("0,25 s", 250), ("0,5 s", 500), ("1 s (Standard)", 1000), ("2 s", 2000)]
 COL_NAME, COL_LINE, COL_PTT, COL_LATCH = range(4)
 
 
@@ -162,10 +164,62 @@ class ClientSettingsDialog(QDialog):
         fa.addRow("Mikrofon", self.mic)
         fa.addRow("Ausgang (Kopfhörer)", self.speaker)
         fa.addRow("Mikrofon-Verstärkung", self.mic_gain)
-        note = QLabel("Bitte mit Kopfhörer/Headset benutzen: Der Client hat noch keine Echo-Unterdrückung.")
-        note.setWordWrap(True)
-        muted(note)
-        fa.addRow("", note)
+
+        # -- microphone processing
+        box_proc = QGroupBox("Mikrofon-Aufbereitung")
+        fp = QFormLayout(box_proc)
+        self.preset = QComboBox()
+        self.preset.addItem("Headset (alles aus, beste Qualität)", "headset")
+        self.preset.addItem("Lautsprecher (Echo + Rauschen)", "speakers")
+        self.preset.addItem("Eigene Einstellung", "custom")
+        self.echo = QCheckBox("Echo-Unterdrückung (nötig bei Lautsprechern)")
+        self.noise = QComboBox()
+        for label, value in NOISE_LEVELS:
+            self.noise.addItem(label, value)
+        self.agc = QCheckBox("Automatische Pegelregelung")
+        self.echo.setChecked(bool(audio.get("echo_cancellation", False)))
+        self.noise.setCurrentIndex(max(0, self.noise.findData(int(audio.get("noise_suppression", 0)))))
+        self.agc.setChecked(bool(audio.get("auto_gain", False)))
+        fp.addRow("Voreinstellung", self.preset)
+        fp.addRow("", self.echo)
+        fp.addRow("Rauschunterdrückung", self.noise)
+        fp.addRow("", self.agc)
+        proc_note = QLabel("Mit Headset alles aus lassen. Bei Lautsprechern die Echo-Unterdrückung einschalten, sonst "
+                           "gibt es Rückkopplung.")
+        proc_note.setWordWrap(True)
+        muted(proc_note)
+        fp.addRow("", proc_note)
+        self._sync_preset()
+        self.preset.activated.connect(self._apply_preset)
+        for w in (self.echo, self.agc):
+            w.toggled.connect(self._sync_preset)
+        self.noise.currentIndexChanged.connect(self._sync_preset)
+
+        # -- dimming of the programme line
+        dim = raw.get("dim") or {}
+        box_dim = QGroupBox("Programm-Leitung dimmen")
+        fd = QFormLayout(box_dim)
+        self.dim_amount = QSpinBox()
+        self.dim_amount.setRange(-40, 0)
+        self.dim_amount.setSuffix(" dB")
+        self.dim_amount.setSpecialValueText("aus")
+        self.dim_amount.setValue(int(dim.get("amount_db", -14)))
+        self.dim_addressed = QCheckBox("wenn mich jemand anspricht")
+        self.dim_addressed.setChecked(bool(dim.get("when_addressed", True)))
+        self.dim_speaking = QCheckBox("wenn ich spreche")
+        self.dim_speaking.setChecked(bool(dim.get("while_speaking", True)))
+        self.dim_delay = QComboBox()
+        for label, ms in DIM_DELAYS:
+            self.dim_delay.addItem(label, ms)
+        self.dim_delay.setCurrentIndex(max(0, self.dim_delay.findData(int(dim.get("delay_ms", 1000)))))
+        fd.addRow("Absenkung", self.dim_amount)
+        fd.addRow("Dimmen", self.dim_addressed)
+        fd.addRow("", self.dim_speaking)
+        fd.addRow("Reaktionszeit", self.dim_delay)
+        dim_note = QLabel("Welche Leitung die Programm-Leitung ist, erkennt der Client an der Markierung am Server.")
+        dim_note.setWordWrap(True)
+        muted(dim_note)
+        fd.addRow("", dim_note)
 
         # -- keys
         box_keys = QGroupBox("Globale Tasten")
@@ -186,7 +240,7 @@ class ClientSettingsDialog(QDialog):
         # the screen, and the buttons must never be out of reach.
         content = QWidget()
         lay = QVBoxLayout(content)
-        for w in (box_srv, box_lines, box_audio, box_keys):
+        for w in (box_srv, box_lines, box_audio, box_proc, box_dim, box_keys):
             lay.addWidget(w)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -209,6 +263,34 @@ class ClientSettingsDialog(QDialog):
         self.btn_remove.clicked.connect(self._remove)
         self.btn_up.clicked.connect(lambda: self._move(-1))
         self.btn_down.clicked.connect(lambda: self._move(1))
+
+    # -- microphone processing presets
+
+    PRESETS = {"headset": (False, 0, False), "speakers": (True, 2, False)}
+
+    def _current_processing(self) -> tuple[bool, int, bool]:
+        return self.echo.isChecked(), int(self.noise.currentData()), self.agc.isChecked()
+
+    def _sync_preset(self) -> None:
+        """The preset box shows which preset the three settings match, or 'own setting'."""
+        cur = self._current_processing()
+        key = next((k for k, v in self.PRESETS.items() if v == cur), "custom")
+        self.preset.blockSignals(True)
+        self.preset.setCurrentIndex(self.preset.findData(key))
+        self.preset.blockSignals(False)
+
+    def _apply_preset(self) -> None:
+        values = self.PRESETS.get(self.preset.currentData())
+        if values is None:
+            return
+        echo, noise, agc = values
+        for w, v in ((self.echo, echo), (self.agc, agc)):
+            w.blockSignals(True)
+            w.setChecked(v)
+            w.blockSignals(False)
+        self.noise.blockSignals(True)
+        self.noise.setCurrentIndex(self.noise.findData(noise))
+        self.noise.blockSignals(False)
 
     # -- the lines table
 
@@ -325,6 +407,20 @@ class ClientSettingsDialog(QDialog):
             else:
                 audio.pop(key, None)
         audio["mic_gain_db"] = round(self.mic_gain.value(), 1)
+        echo, noise, agc = self._current_processing()
+        for key, value, default in (("echo_cancellation", echo, False), ("noise_suppression", noise, 0),
+                                    ("auto_gain", agc, False)):
+            if value == default:
+                audio.pop(key, None)  # keep the file free of defaults
+            else:
+                audio[key] = value
+        dim = {}
+        for key, value, default in (("amount_db", self.dim_amount.value(), ClientDim().amount_db),
+                                    ("when_addressed", self.dim_addressed.isChecked(), True),
+                                    ("while_speaking", self.dim_speaking.isChecked(), True),
+                                    ("delay_ms", int(self.dim_delay.currentData()), ClientDim().delay_ms)):
+            if value != default:
+                dim[key] = value
         lines = []
         for r in range(self.table.rowCount()):
             name, (prod, line), ptt, latch = self._row_values(r)
@@ -344,6 +440,10 @@ class ClientSettingsDialog(QDialog):
         data.update(server=server, audio=audio, hotkeys={k: v for k, v in hotkeys.items() if v}, line=lines)
         if not data["hotkeys"]:
             data.pop("hotkeys")
+        if dim:
+            data["dim"] = dim
+        else:
+            data.pop("dim", None)
         # the real check: the same parser the client uses (also catches one key used twice)
         password = self.pw.text() or self._password() or "unchecked"
         try:

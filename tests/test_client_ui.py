@@ -314,3 +314,66 @@ def test_the_button_on_a_card_disconnects_and_connects_just_that_line(app, tmp_p
         assert regie.talk.isEnabled() and regie.connect_btn.text() == "Trennen"
     finally:
         win.close()
+
+
+# ---------------------------------------------------------------- processing and dimming settings
+
+def test_settings_show_the_defaults_for_processing_and_dimming(app, tmp_path):
+    d = dialog(tmp_path)
+    assert d.preset.currentData() == "headset" and not d.echo.isChecked() and d.noise.currentData() == 0
+    assert not d.agc.isChecked()
+    assert d.dim_amount.value() == -14 and d.dim_addressed.isChecked() and d.dim_speaking.isChecked()
+    assert d.dim_delay.currentData() == 1000
+    d.pw.setText("x")
+    d._accept()
+    out = d.result_data
+    assert not {"echo_cancellation", "noise_suppression", "auto_gain"} & set(out["audio"])  # defaults are not written
+    assert "dim" not in out
+
+
+def test_the_speaker_preset_switches_echo_and_noise_on_and_changes_make_it_a_custom_setting(app, tmp_path):
+    d = dialog(tmp_path)
+    d.pw.setText("x")
+    d.preset.setCurrentIndex(d.preset.findData("speakers"))
+    d._apply_preset()
+    assert d.echo.isChecked() and d.noise.currentData() == 2 and not d.agc.isChecked()
+    d._accept()
+    audio = d.result_data["audio"]
+    assert audio["echo_cancellation"] is True and audio["noise_suppression"] == 2 and "auto_gain" not in audio
+
+    d = dialog(tmp_path)
+    d.pw.setText("x")
+    d.agc.setChecked(True)
+    assert d.preset.currentData() == "custom"
+    d.noise.setCurrentIndex(d.noise.findData(4))
+    d._accept()
+    assert d.result_data["audio"] == {**d.result_data["audio"], "noise_suppression": 4, "auto_gain": True}
+
+    d.preset.setCurrentIndex(d.preset.findData("headset"))
+    d._apply_preset()
+    assert not d.echo.isChecked() and d.noise.currentData() == 0 and not d.agc.isChecked()
+
+
+def test_settings_save_and_reload_the_dimming_and_processing_values(app, tmp_path):
+    d = dialog(tmp_path)
+    d.pw.setText("x")
+    d.dim_amount.setValue(-20)
+    d.dim_addressed.setChecked(False)
+    d.dim_delay.setCurrentIndex(d.dim_delay.findData(250))
+    d.echo.setChecked(True)
+    d._accept()
+    out = d.result_data
+    assert out["dim"] == {"amount_db": -20, "when_addressed": False, "delay_ms": 250}
+    tomlio.save(tmp_path / "client.toml", out)
+
+    again = dialog(tmp_path, with_cfg=False)
+    assert again.dim_amount.value() == -20 and not again.dim_addressed.isChecked() and again.dim_speaking.isChecked()
+    assert again.dim_delay.currentData() == 250 and again.echo.isChecked()
+
+    again.dim_amount.setValue(-14)
+    again.dim_addressed.setChecked(True)
+    again.dim_delay.setCurrentIndex(again.dim_delay.findData(1000))
+    again.echo.setChecked(False)
+    again.pw.setText("x")
+    again._accept()
+    assert "dim" not in again.result_data and "echo_cancellation" not in again.result_data["audio"]

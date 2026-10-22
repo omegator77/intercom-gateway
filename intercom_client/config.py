@@ -29,6 +29,19 @@ class ClientAudio:
     mic_gain_db: float = 0.0
     output_gain_db: float = 0.0
     playout_ms: int = 60
+    # Microphone processing (WebRTC audio processing, the same family the browser uses). All off = unprocessed.
+    echo_cancellation: bool = False  # for speakers instead of a headset
+    noise_suppression: int = 0  # 0 off, 1 low, 2 moderate, 3 high, 4 very high
+    auto_gain: bool = False
+
+
+@dataclass(frozen=True)
+class ClientDim:
+    """Lowering the programme line while somebody talks (same behaviour and defaults as the web app)."""
+    amount_db: int = -14  # 0 = never dimmed
+    when_addressed: bool = True  # someone speaks to me on another line
+    while_speaking: bool = True  # I speak on another line
+    delay_ms: int = 1000  # speech must last this long before dimming starts, and it stays this long after it ended
 
 
 @dataclass(frozen=True)
@@ -50,6 +63,7 @@ class ClientCfg:
     lines: tuple[ClientLine, ...]
     global_mute_key: str | None = None
     companion_url: str | None = None  # ws://host:port of the Companion module (Stream Deck), None = off
+    dim: ClientDim = ClientDim()
 
     def hotkey_bindings(self) -> dict[str, Combo]:
         """action id -> key combination, for every configured key."""
@@ -114,9 +128,28 @@ def parse_client_config(data: Mapping, env: Mapping[str, str] | None = None,
     out_ch = a.get("output_channels", [0, 1])
     if not isinstance(out_ch, list) or not out_ch or not all(isinstance(c, int) and c >= 0 for c in out_ch):
         raise ConfigError("[audio] output_channels must be a non-empty list of channel numbers >= 0")
+    ns = a.get("noise_suppression", 0)
+    if not isinstance(ns, int) or isinstance(ns, bool) or not 0 <= ns <= 4:
+        raise ConfigError("[audio] noise_suppression must be 0 (off) .. 4 (very high)")
+    for key in ("echo_cancellation", "auto_gain"):
+        if not isinstance(a.get(key, False), bool):
+            raise ConfigError(f"[audio] {key} must be true or false")
     audio = ClientAudio(backend, a.get("input_device") or None, a.get("output_device") or None, in_ch,
                         tuple(out_ch), _gain(a.get("mic_gain_db", 0.0), "[audio] mic_gain_db"),
-                        _gain(a.get("output_gain_db", 0.0), "[audio] output_gain_db"), playout)
+                        _gain(a.get("output_gain_db", 0.0), "[audio] output_gain_db"), playout,
+                        bool(a.get("echo_cancellation", False)), ns, bool(a.get("auto_gain", False)))
+
+    d = data.get("dim") or {}
+    amount = d.get("amount_db", -14)
+    if not isinstance(amount, int) or isinstance(amount, bool) or not -40 <= amount <= 0:
+        raise ConfigError("[dim] amount_db must be a whole number between -40 and 0 (0 = no dimming)")
+    delay = d.get("delay_ms", 1000)
+    if not isinstance(delay, int) or isinstance(delay, bool) or not 0 <= delay <= 5000:
+        raise ConfigError("[dim] delay_ms must be between 0 and 5000")
+    for key in ("when_addressed", "while_speaking"):
+        if not isinstance(d.get(key, True), bool):
+            raise ConfigError(f"[dim] {key} must be true or false")
+    dim = ClientDim(amount, bool(d.get("when_addressed", True)), bool(d.get("while_speaking", True)), delay)
 
     lines: list[ClientLine] = []
     seen: set[str] = set()
@@ -144,7 +177,7 @@ def parse_client_config(data: Mapping, env: Mapping[str, str] | None = None,
     if comp is not None and not str(comp).startswith(("ws://", "wss://")):
         raise ConfigError("[companion] url must start with ws:// or wss://")
     cfg = ClientCfg(url, username, password, audio, tuple(lines),
-                    _key(hk.get("global_mute"), "[hotkeys] global_mute"), comp)
+                    _key(hk.get("global_mute"), "[hotkeys] global_mute"), comp, dim)
     try:
         HotkeyMatcher(cfg.hotkey_bindings())  # raises when one key combination is bound twice
     except HotkeyError as e:

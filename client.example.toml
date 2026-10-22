@@ -12,6 +12,16 @@ input_channel = 0
 output_channels = [0, 1]
 mic_gain_db = 0.0
 playout_ms = 60
+# Aufbereitung des Mikrofons (alles aus = unverändert, für Headset):
+# echo_cancellation = false  # true bei Lautsprechern statt Kopfhörer
+# noise_suppression = 0      # 0 aus, 1 niedrig, 2 mittel, 3 hoch, 4 sehr hoch
+# auto_gain = false          # automatische Pegelregelung
+
+[dim]                        # Programm-Leitung absenken (Standardwerte wie in der Web-App)
+# amount_db = -14            # 0 = nie dimmen
+# when_addressed = true      # wenn dich jemand in einer anderen Leitung anspricht
+# while_speaking = true      # wenn du in einer anderen Leitung sprichst
+# delay_ms = 1000            # so lange muss gesprochen werden / so lange bleibt das Dimmen
 
 [hotkeys]
 global_mute = "ctrl+alt+m"   # Mikrofon in allen Leitungen aus/an

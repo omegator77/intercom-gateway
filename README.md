@@ -41,7 +41,14 @@ intercom-client            # Oberfläche; beim ersten Start öffnen sich die Ein
   Dauer-Taste, Mikrofon und Kopfhörer, Taste für „Alles stumm". Beispiel: `client.example.toml`.
 - Die Reihenfolge der Leitungen ist die Tastennummer für Companion/Stream Deck (noch nicht angebunden).
 - Die anderen sehen dich unter dem Namen deines Kontos (Alias in den User Settings der Web-App).
-- **Nur mit Headset benutzen:** Es gibt noch keine Echo-Unterdrückung.
+- **Mikrofon-Aufbereitung** (Einstellungen → Mikrofon-Aufbereitung): Echo-Unterdrückung, Rauschunterdrückung (4 Stufen)
+  und automatische Pegelregelung, mit den Voreinstellungen „Headset" (alles aus, beste Qualität) und „Lautsprecher"
+  (Echo + Rauschen). Das ist das WebRTC-Audiomodul (Paket `aec-audio-processing`), dieselbe Algorithmen-Familie wie im
+  Browser. Mit Kopfhörer alles aus lassen; bei Lautsprechern muss die Echo-Unterdrückung an sein.
+- **Programm-Leitung dimmen** (Einstellungen → Programm-Leitung dimmen): wie in der Web-App wird die Programm-Leitung
+  abgesenkt, wenn dich jemand in einer anderen Leitung anspricht und/oder wenn du dort sprichst (Standard −14 dB,
+  1 s Reaktionszeit, beides einstellbar). Welche Leitung die Programm-Leitung ist, erkennt der Client an der
+  Markierung am Server; die Karte zeigt „Programm" bzw. „Programm · gedimmt".
 - Test ohne Soundkarte: `backend = "synthetic"` in `[audio]`; `dev/e2e_client.py` prüft zwei Clients gegen den
   lokalen Teststack.
 

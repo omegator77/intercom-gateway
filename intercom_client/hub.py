@@ -19,12 +19,15 @@ import numpy as np
 
 from gateway.audio import DeviceError, DeviceInputTrack, Level, MixedPlayout, SR, db_to_lin, match_device, soft_limit
 
-from .config import ClientAudio
+from .config import ClientAudio, ClientDim
+from .processing import MicProcessor, ProcessingUnavailable
 from .talk import TalkControl
 
 log = logging.getLogger("client.hub")
 
 BLOCK = 480  # 10 ms at 48 kHz
+SPEECH_LEVEL = 0.02  # RMS (full scale = 1.0) above which somebody counts as speaking; the web app uses the same
+DIM_GLIDE_S = 0.1  # the programme line glides to its dimmed level (and back) instead of jumping
 
 
 @dataclass
@@ -33,6 +36,7 @@ class LineControl:
     name: str
     volume_pct: int = 100  # 0..150
     listen_mute: bool = False
+    program: bool = False  # the production's programme line (set from what the server says); this one gets dimmed
     talk: TalkControl = field(default_factory=TalkControl)
 
     @property
@@ -49,6 +53,7 @@ class SharedLineAudio:
         self.track = DeviceInputTrack(loop)
         self.out_buf = MixedPlayout(target_ms=playout_ms)
         self.out_level = Level()
+        self.raw_level = Level()  # what the line delivers, before its volume: is somebody speaking on it?
         self.recorder = None  # the worker may set one for diagnostics; unused here
 
     def on_remote_pcm(self, mono: np.ndarray, key: int = 0) -> None:
@@ -76,12 +81,52 @@ class SharedLineAudio:
         }
 
 
+class Dimmer:
+    """When the programme line is lowered, with the web app's timing: speech has to last `delay` before dimming
+    starts, and the line stays dimmed for `delay` after it stopped. The gain glides instead of jumping."""
+
+    def __init__(self, cfg: ClientDim):
+        self.cfg = cfg
+        self.dimmed = False
+        self.gain = 1.0
+        self._held = 0.0  # how long the opposite of the current state has been true
+
+    @property
+    def level_gain(self) -> float:
+        return 10.0 ** (self.cfg.amount_db / 20.0)
+
+    def step(self, speaking: bool, dt: float) -> tuple[float, float]:
+        """Advance `dt` seconds; returns the gain at the start and at the end of the step."""
+        if self.cfg.amount_db == 0:
+            self.dimmed, self._held = False, 0.0
+        elif speaking != self.dimmed:
+            self._held += dt
+            if self._held >= self.cfg.delay_ms / 1000.0:
+                self.dimmed, self._held = speaking, 0.0
+        else:
+            self._held = 0.0
+        start = self.gain
+        target = self.level_gain if self.dimmed else 1.0
+        most = abs(1.0 - self.level_gain) * dt / DIM_GLIDE_S
+        self.gain = min(target, start + most) if target > start else max(target, start - most)
+        return start, self.gain
+
+
 class AudioHub:
     def __init__(self, cfg: ClientAudio):
         self.cfg = cfg
         self.global_mute = False  # nobody is transmitting, whatever the lines say
         self.mic_level = Level()
         self.out_level = Level()
+        self._dimmer = Dimmer(ClientDim(amount_db=0))  # off until the engine sets the configured values
+        self.processing_error: str | None = None  # why the configured echo/noise processing is not running
+        self._proc: MicProcessor | None = None
+        if cfg.echo_cancellation or cfg.noise_suppression or cfg.auto_gain:
+            try:
+                self._proc = MicProcessor(cfg.echo_cancellation, cfg.noise_suppression, cfg.auto_gain)
+            except ProcessingUnavailable as e:
+                self.processing_error = str(e)
+                log.warning("%s", e)
         self._mic_gain = db_to_lin(cfg.mic_gain_db)
         self._out_gain = db_to_lin(cfg.output_gain_db)
         self._lines: tuple[SharedLineAudio, ...] = ()
@@ -99,11 +144,38 @@ class AudioHub:
         with self._lock:
             self._lines = tuple(x for x in self._lines if x is not line)
 
+    def set_dim(self, dim: ClientDim) -> None:
+        self._dimmer = Dimmer(dim)
+
+    @property
+    def dimmed(self) -> bool:
+        return self._dimmer.dimmed
+
+    @property
+    def processing(self) -> str:
+        """'off', 'on' or the reason the configured processing could not start."""
+        return self.processing_error or ("on" if self._proc else "off")
+
+    def _speech_active(self) -> bool:
+        """Is somebody speaking on a line other than the programme line (to me, or me into it)?"""
+        d = self._dimmer.cfg
+        for line in self._lines:
+            c = line.control
+            if c.program:
+                continue
+            if d.when_addressed and line.raw_level.rms > SPEECH_LEVEL:
+                return True
+            if d.while_speaking and c.talk.transmitting and not self.global_mute and self.mic_level.rms > SPEECH_LEVEL:
+                return True
+        return False
+
     # -- the audio logic (called every 10 ms from the audio threads)
 
     def process_mic(self, block: np.ndarray) -> None:
         """One block from the microphone: to every line that is being talked into, silence to the others."""
         mic = soft_limit(block * self._mic_gain) if self._mic_gain != 1.0 else block
+        if self._proc is not None:
+            mic = self._proc.process(mic)
         self.mic_level.update(mic)
         silence = self._silence[: len(mic)]
         muted = self.global_mute
@@ -113,14 +185,20 @@ class AudioHub:
     def mix_output(self, frames: int) -> np.ndarray:
         """The next `frames` samples for the output: every line at its own volume, summed and limited."""
         out = np.zeros(frames, np.float32)
+        d0, d1 = self._dimmer.step(self._speech_active(), frames / SR)
         for line in self._lines:
             x = line.out_buf.read(frames)  # also for muted lines: their buffers must keep draining
+            line.raw_level.update(x)
             y = x * line.control.gain
+            if line.control.program and (d0 != 1.0 or d1 != 1.0):
+                y = y * (np.linspace(d0, d1, frames, dtype=np.float32) if d0 != d1 else d0)
             line.out_level.update(y)
             if line.control.gain > 0:
                 out += y
         out = soft_limit(out * self._out_gain) if self._out_gain != 1.0 else soft_limit(out)
         self.out_level.update(out)
+        if self._proc is not None:
+            self._proc.reverse(out)  # what is played now comes back through the microphone a moment later
         return out
 
     def _log_cb_error(self, which: str) -> None:

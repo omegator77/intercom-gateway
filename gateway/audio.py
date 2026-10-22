@@ -47,6 +47,10 @@ class Level:
             self._rms = 0.7 * self._rms + 0.3 * float(np.sqrt(np.mean(np.square(x, dtype=np.float32))))
 
     @property
+    def rms(self) -> float:
+        return self._rms
+
+    @property
     def dbfs(self) -> float:
         return 20.0 * math.log10(max(self._rms, 1e-6))
 

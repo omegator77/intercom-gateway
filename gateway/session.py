@@ -61,6 +61,7 @@ class LineWorker:
         self.audio: LineAudio | None = None
         self.conn: LineConnection | None = None
         self.participants: list[dict] | None = None  # others on the line; None = not known (not connected / fetch failing)
+        self.program_line: bool | None = None  # the line is the production's programme line (from the same poll)
 
     def stop(self) -> None:
         self._stop.set()
@@ -90,6 +91,7 @@ class LineWorker:
             self.session_id = None
             self.connected_since = None
             self.participants = None
+            self.program_line = None
             if self._stop.is_set():
                 break
             backoff = 1.0 if time.monotonic() - started > STABLE_S else min(backoff * 2, BACKOFF_MAX_S)
@@ -187,6 +189,7 @@ class LineWorker:
             try:
                 self.participants = await asyncio.wait_for(
                     conn.participants(self.cfg.production_id, self.cfg.line_id), PARTICIPANTS_S)
+                self.program_line = getattr(conn, "program_line", None)
                 failures = 0
             except asyncio.CancelledError:
                 raise
@@ -216,4 +219,5 @@ class LineWorker:
             "rx_lost": self.conn.rx_lost if self.conn else 0,
             "last_error": self.last_error,
             "participants": self.participants,
+            "program_line": self.program_line,
         }

@@ -79,6 +79,7 @@ class LineConnection:
         stereo_rx: bool = False,  # hand on_pcm (n, 2) L/R frames instead of a mono downmix
     ):
         self._stereo_rx = stereo_rx
+        self.program_line: bool | None = None  # the server's "programOutputLine" flag, known after the first poll
         self._recorder = recorder
         self._opus = opus
         self._relay_type = relay_type
@@ -220,7 +221,9 @@ class LineConnection:
         r = await self._http.get(f"{API}/production/{production_id}/line/{line_id}", headers=self._headers)
         if r.status_code != 200:
             raise SessionError(f"GET line -> HTTP {r.status_code}", r.status_code)
-        return parse_participants(r.json(), self.session_id)
+        data = r.json()
+        self.program_line = bool(data.get("programOutputLine")) if isinstance(data, dict) else None
+        return parse_participants(data, self.session_id)
 
     async def heartbeat(self) -> int:
         r = await self._http.get(f"{API}/heartbeat/{self.session_id}", headers=self._headers)

@@ -109,3 +109,41 @@ def test_people_html():
                         {"name": "Butt", "active": False, "whip": True}])
     assert "&lt;b&gt;Anna&lt;/b&gt;" in html and "<b>Anna</b>" not in html  # names come from other users: escaped
     assert "(inaktiv)" in html and "WHIP" in html
+
+
+# ---------------------------------------------------------------- the programme-line flag rides on the same poll
+
+def test_the_poll_reports_the_servers_programme_line_flag():
+    import httpx
+
+    from gateway.rtc import LineConnection
+
+    async def go(payload):
+        def handler(request):
+            return httpx.Response(200, json=payload)
+
+        http = httpx.AsyncClient(base_url="http://x", transport=httpx.MockTransport(handler))
+        conn = LineConnection.__new__(LineConnection)
+        conn._http, conn._headers, conn.session_id, conn.program_line = http, {}, "me", None
+        people = await conn.participants("1", "2")
+        await http.aclose()
+        return conn.program_line, people
+
+    assert asyncio.run(go({"programOutputLine": True, "participants": []})) == (True, [])
+    assert asyncio.run(go({"programOutputLine": False, "participants": []}))[0] is False
+    assert asyncio.run(go({"participants": []}))[0] is False  # an older server without the field: not a programme line
+
+
+def test_the_worker_keeps_the_flag_and_forgets_it_when_the_poll_fails(monkeypatch):
+    async def go():
+        w = make_worker()
+        conn = FakeConn([[]])
+        conn.program_line = True
+        monkeypatch.setattr(session_mod, "PARTICIPANTS_S", 0.02)
+        task = asyncio.ensure_future(w._poll_participants(conn))
+        await asyncio.sleep(0.1)
+        assert w.program_line is True and w.status()["program_line"] is True
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert make_worker().status()["program_line"] is None
+    asyncio.run(go())

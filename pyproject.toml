@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = ["PySide6-Essentials>=6.7", "keyring>=24"]
-client = ["PySide6-Essentials>=6.7", "keyring>=24", "pynput>=1.7"]
+client = ["PySide6-Essentials>=6.7", "keyring>=24", "pynput>=1.7", "aec-audio-processing>=1.0"]
 dev = ["pytest>=8"]
 build = ["pyinstaller>=6.10"]
 

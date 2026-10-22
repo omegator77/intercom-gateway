@@ -92,6 +92,7 @@ class ClientEngine:
         try:
             hub = self.hub = self._hub_factory(self.cfg.audio)
             hub.global_mute = self._global_mute
+            hub.set_dim(self.cfg.dim)
             try:
                 await hub.start()
             except DeviceError as e:
@@ -113,7 +114,9 @@ class ClientEngine:
                     self._spawn(line)
             self._start_hotkeys()
             self._notify()
+            sync = asyncio.ensure_future(self._sync_program_flags())
             await self._stop.wait()
+            sync.cancel()
         finally:
             self._closing = True
             self._stop_hotkeys()
@@ -130,6 +133,16 @@ class ClientEngine:
                 await http.aclose()
             self._ready.set()
             self._notify()
+
+    async def _sync_program_flags(self) -> None:
+        """The server says which line is the programme line (with the participants poll); the audio hub needs it
+        to know which line to dim."""
+        while True:
+            for name, w in list(self.workers.items()):
+                flag = getattr(w, "program_line", None)
+                if flag is not None and name in self.controls:
+                    self.controls[name].program = bool(flag)
+            await asyncio.sleep(1.0)
 
     # ------------------------------------------------------------------ one line at a time
 
@@ -290,6 +303,8 @@ class ClientEngine:
                 "uptime_s": s.get("uptime_s", 0),
                 "last_error": s.get("last_error"),
                 "participants": s.get("participants"),
+                "program": c.program,
+                "dimmed": bool(c.program and self.hub and self.hub.dimmed),
                 "talking": c.talk.transmitting and not self.global_mute,
                 "held": c.talk.held,
                 "latched": c.talk.latched,
@@ -305,6 +320,9 @@ class ClientEngine:
             "running": self.running,
             "error": self.error,
             "global_mute": self.global_mute,
+            "dimmed": bool(self.hub and self.hub.dimmed),
+            "dim_db": self.cfg.dim.amount_db,
+            "processing": self.hub.processing if self.hub else "off",
             "mic_dbfs": self.hub.mic_level.dbfs if self.hub else -120.0,
             "out_dbfs": self.hub.out_level.dbfs if self.hub else -120.0,
             "hotkeys": self.hotkey_status,
