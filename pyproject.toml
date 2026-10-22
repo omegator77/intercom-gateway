@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = ["PySide6-Essentials>=6.7", "keyring>=24"]
+client = ["PySide6-Essentials>=6.7", "keyring>=24", "pynput>=1.7"]
 dev = ["pytest>=8"]
 build = ["pyinstaller>=6.10"]
 
@@ -24,9 +25,10 @@ intercom-gateway = "gateway.__main__:main"
 
 [project.gui-scripts]
 intercom-gateway-ui = "gateway.ui.app:main"
+intercom-client = "intercom_client.ui.app:main"
 
 [tool.setuptools.packages.find]
-include = ["gateway*"]
+include = ["gateway*", "intercom_client*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

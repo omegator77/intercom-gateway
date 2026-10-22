@@ -42,7 +42,7 @@ AudioFactory = Callable[[LineCfg, AudioCfg, asyncio.AbstractEventLoop], LineAudi
 
 class LineWorker:
     def __init__(self, cfg: LineCfg, server: ServerCfg, audio_cfg: AudioCfg, audio_factory: AudioFactory,
-                 http: httpx.AsyncClient, debug: DebugCfg = DebugCfg()):
+                 http: httpx.AsyncClient, debug: DebugCfg = DebugCfg(), auth: AuthClient | None = None):
         self.cfg = cfg
         self._debug = debug
         self._recorder: Recorder | None = None
@@ -50,7 +50,8 @@ class LineWorker:
         self._audio_cfg = audio_cfg
         self._audio_factory = audio_factory
         self._http = http  # shared by all lines (see gateway/http.py)
-        self.auth = AuthClient(http, cfg.username, cfg.password)
+        # Lines of one account (the intercom client) can share one login: it is rate-limited per address
+        self.auth = auth or AuthClient(http, cfg.username, cfg.password)
         self._stop = asyncio.Event()
         self.state = State.IDLE
         self.last_error: str | None = None

@@ -24,6 +24,26 @@ Frühe Version (0.3.0). Lauffähig sind:
 Getestet wurde unter Windows mit Dante Virtual Soundcard. Das Gateway nutzt ausschließlich
 **WASAPI**-Geräte. Ein Interface, das nur ASIO anbietet, taucht nicht auf.
 
+## Intercom-Client (für Menschen, Entwicklungsstand)
+
+Neben dem Gateway gibt es einen Client für eine Person mit Headset: Er tritt mehreren Leitungen bei und hat
+**Push-to-Talk** (Halten), **Dauer-Sprechen** (Latch), **Lautstärke und Stumm pro Leitung** und **globale Tasten**,
+die auch gelten, wenn ein anderes Programm im Vordergrund ist. Ein Mikrofon wird auf alle Leitungen verteilt (nur in
+die Leitung, in die gerade gesprochen wird, geht Ton), alle Leitungen werden zu einem Ausgang gemischt.
+
+```powershell
+pip install -e ".[client]"
+intercom-client            # Oberfläche; beim ersten Start öffnen sich die Einstellungen
+```
+
+- Einstellungen: Server und Konto, Leitungen hinzufügen (nach dem Login aus der Liste), pro Leitung Sprechen- und
+  Dauer-Taste, Mikrofon und Kopfhörer, Taste für „Alles stumm". Beispiel: `client.example.toml`.
+- Die Reihenfolge der Leitungen ist die Tastennummer für Companion/Stream Deck (noch nicht angebunden).
+- Die anderen sehen dich unter dem Namen deines Kontos (Alias in den User Settings der Web-App).
+- **Nur mit Headset benutzen:** Es gibt noch keine Echo-Unterdrückung.
+- Test ohne Soundkarte: `backend = "synthetic"` in `[audio]`; `dev/e2e_client.py` prüft zwei Clients gegen den
+  lokalen Teststack.
+
 ## Installation (Entwicklungsstand)
 
 Voraussetzung: Python 3.11 oder neuer, Windows.

@@ -1,0 +1,33 @@
+# Intercom-Client - Beispiel. Normalerweise legt die Oberfläche (intercom-client) diese Datei selbst an.
+# Das Passwort steht NICHT hier, sondern im Windows-Anmeldeinformationsspeicher.
+
+[server]
+url = "https://intercom.example.org"
+username = "anna"            # die anderen sehen dich unter dem Namen deines Kontos (Alias in den User Settings)
+
+[audio]
+# input_device = "Headset"   # Teil des Gerätenamens; ohne Eintrag: Systemstandard
+# output_device = "Headset"
+input_channel = 0
+output_channels = [0, 1]
+mic_gain_db = 0.0
+playout_ms = 60
+
+[hotkeys]
+global_mute = "ctrl+alt+m"   # Mikrofon in allen Leitungen aus/an
+
+[[line]]
+name = "Regie"
+production_id = "4"
+line_id = "1"
+volume = 100                 # Prozent, 0..150
+ptt_key = "f1"               # Sprechen, solange die Taste gehalten wird
+latch_key = "shift+f1"       # Dauer-Sprechen ein/aus
+
+[[line]]
+name = "Technik"
+production_id = "4"
+line_id = "2"
+volume = 80
+ptt_key = "f2"
+latch_key = "shift+f2"
