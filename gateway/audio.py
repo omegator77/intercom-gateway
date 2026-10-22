@@ -236,8 +236,9 @@ class DeviceInputTrack(MediaStreamTrack):
 
     kind = "audio"
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, max_buffer_ms: int = 200):
+    def __init__(self, loop: asyncio.AbstractEventLoop, max_buffer_ms: int = 200, channels: int = 1):
         super().__init__()
+        self.channels = channels  # 1 = mono, 2 = stereo pair
         self._loop = loop
         self._chunks: collections.deque[np.ndarray] = collections.deque()
         self._avail = 0
@@ -251,10 +252,16 @@ class DeviceInputTrack(MediaStreamTrack):
         self.stalls = 0
 
     def push(self, mono: np.ndarray) -> None:
-        """Called from the audio thread (or the loop thread). `mono` is float32 in -1..1."""
+        """Called from the audio thread (or the loop thread). float32 in -1..1: shape (n,) for a mono track,
+        (n, 2) for a stereo one (a mono chunk pushed to a stereo track is sent on both channels)."""
+        chunk = np.array(mono, dtype=np.float32, copy=True)
+        if self.channels == 2 and chunk.ndim == 1:
+            chunk = np.stack([chunk, chunk], axis=1)
+        elif self.channels == 1 and chunk.ndim == 2:
+            chunk = chunk.mean(axis=1)
         with self._lock:
-            self._chunks.append(np.array(mono, dtype=np.float32, copy=True))
-            self._avail += len(mono)
+            self._chunks.append(chunk)
+            self._avail += len(chunk)
             while self._avail > self._max and len(self._chunks) > 1:  # consumer behind: drop oldest
                 dropped = self._chunks.popleft()
                 self._avail -= len(dropped)
@@ -289,9 +296,10 @@ class DeviceInputTrack(MediaStreamTrack):
         if self.readyState != "live":
             raise MediaStreamError
         samples: np.ndarray | None = None
+        silence = np.zeros(FRAME if self.channels == 1 else (FRAME, 2), np.float32)
         if self._owed_silence > 0:
             self._owed_silence -= 1
-            samples = np.zeros(FRAME, np.float32)
+            samples = silence
         while samples is None:
             self._event.clear()
             samples = self._take()
@@ -302,10 +310,12 @@ class DeviceInputTrack(MediaStreamTrack):
             except asyncio.TimeoutError:
                 self.stalls += 1
                 self._owed_silence = 4  # 100 ms elapsed = this frame + 4 more
-                samples = np.zeros(FRAME, np.float32)
+                samples = silence
         self.level.update(samples)
         pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype(np.int16)
-        frame = av.AudioFrame.from_ndarray(pcm.reshape(1, -1), format="s16", layout="mono")
+        # packed s16: one row, channels interleaved (L R L R ...) for stereo
+        frame = av.AudioFrame.from_ndarray(pcm.reshape(1, -1), format="s16",
+                                           layout="mono" if self.channels == 1 else "stereo")
         frame.sample_rate = SR
         frame.pts = self._n * FRAME
         frame.time_base = fractions.Fraction(1, SR)
@@ -354,7 +364,7 @@ def match_device(devices: list[dict], hostapis: list[dict], query: str, kind: st
 class _BaseLineAudio:
     def __init__(self, cfg: LineCfg, audio: AudioCfg, loop: asyncio.AbstractEventLoop):
         self.cfg = cfg
-        self.track = DeviceInputTrack(loop)
+        self.track = DeviceInputTrack(loop, channels=2 if cfg.stereo else 1)
         self.out_buf = MixedPlayout(target_ms=audio.playout_ms)
         self.out_level = Level()
         self._in_gain = db_to_lin(cfg.in_gain_db)
@@ -403,8 +413,11 @@ class PortAudioLineAudio(_BaseLineAudio):
 
             def in_cb(indata, frames, time_info, status):
                 try:
-                    mono = indata[:, chans[0]] if len(chans) == 1 else indata[:, chans].mean(axis=1)
-                    self.track.push(mono * self._in_gain)
+                    if cfg.stereo:
+                        pcm = indata[:, chans]  # exactly two channels (checked in the config)
+                    else:
+                        pcm = indata[:, chans[0]] if len(chans) == 1 else indata[:, chans].mean(axis=1)
+                    self.track.push(pcm * self._in_gain)
                 except Exception:  # never let an exception kill the audio thread
                     self._log_cb_error("capture")
 

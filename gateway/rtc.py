@@ -18,6 +18,8 @@ from aiortc.mediastreams import MediaStreamTrack
 from aiortc.rtcrtpreceiver import StreamStatistics
 from aiortc.rtcsctptransport import RTCSctpTransport
 
+from . import opus as opus_settings
+
 log = logging.getLogger("gateway.rtc")
 
 API = "/api/v1"
@@ -60,8 +62,10 @@ class LineConnection:
         ice_servers: tuple[str, ...] = (),
         relay_type: str | None = None,  # None = send no relayType, i.e. behave like the browser frontend
         recorder=None,  # debugrec.Recorder or None
+        opus: tuple[str, int] = (opus_settings.DEFAULT_MODE, opus_settings.DEFAULT_KBPS),  # (mode, kbit/s)
     ):
         self._recorder = recorder
+        self._opus = opus
         self._relay_type = relay_type
         self._http = http  # shared with every other line; never closed here
         self._headers = {"Cookie": f"auth_token={token}"}
@@ -99,7 +103,10 @@ class LineConnection:
         self.offer_sdp = data["sdp"]  # kept for diagnostics and the compatibility check
 
         pc = self.pc
-        pc.addTrack(self._track)
+        sender = pc.addTrack(self._track)
+        if opus_settings.install(sender, *self._opus):
+            log.info("sending Opus %s mode at %d kbit/s%s", self._opus[0], self._opus[1],
+                     ", stereo" if getattr(self._track, "channels", 1) == 2 else "")
         self._dc = pc.createDataChannel("conference-data-channel", ordered=True)  # parity with the browser
 
         @pc.on("track")

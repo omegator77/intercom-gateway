@@ -141,11 +141,27 @@ class LineDialog(QDialog):
         f_in = QFormLayout(box_in)
         self.in_dev = DeviceCombo(inputs, line.get("input_device"))
         self.in_ch = QLineEdit(channels_text(line.get("input_channels"), "1"))
-        self.in_ch.setToolTip("Mehrere Kanäle werden zu Mono gemischt")
+        self.in_ch.setToolTip("Mehrere Kanäle werden zu Mono gemischt — außer bei „Stereo senden“")
         self.in_gain = _gain_spin(line.get("in_gain_db", 0.0))
+        self.stereo = QCheckBox("Stereo senden (genau zwei Kanäle, z. B. „1, 2“)")
+        self.stereo.setChecked(bool(line.get("stereo", False)))
+        self.opus_mode = QComboBox()
+        self.opus_mode.addItem("Sprache", "voip")
+        self.opus_mode.addItem("Musik / Programmton", "audio")
+        self.opus_mode.setCurrentIndex(max(0, self.opus_mode.findData(line.get("opus_mode", "voip"))))
+        self.opus_mode.setToolTip("„Musik / Programmton“ lässt den Klang unverändert, „Sprache“ ist auf Stimmen getrimmt")
+        self.opus_kbps = QSpinBox()
+        self.opus_kbps.setRange(16, 256)
+        self.opus_kbps.setSingleStep(16)
+        self.opus_kbps.setSuffix(" kbit/s")
+        self.opus_kbps.setValue(int(line.get("opus_bitrate_kbps", 96)))
+        self.opus_kbps.setToolTip("Mehr = besserer Klang. 96 ist die bisherige Einstellung; für Programmton z. B. 128")
         f_in.addRow("Gerät", self.in_dev)
         f_in.addRow("Kanäle", self.in_ch)
+        f_in.addRow("", self.stereo)
         f_in.addRow("Verstärkung", self.in_gain)
+        f_in.addRow("Klang optimiert für", self.opus_mode)
+        f_in.addRow("Datenrate", self.opus_kbps)
 
         box_out = QGroupBox("Ausgang — Audio der Leitung ins Dante-Netz")
         f_out = QFormLayout(box_out)
@@ -318,9 +334,18 @@ class LineDialog(QDialog):
                     line[key] = dev
                 else:
                     line.pop(key, None)
-            line["input_channels"] = parse_channels(self.in_ch.text() or "1")
+            line["input_channels"] = parse_channels(self.in_ch.text() or ("1, 2" if self.stereo.isChecked() else "1"))
+            if self.stereo.isChecked() and len(line["input_channels"]) != 2:
+                raise ValueError("Für Stereo genau zwei Eingangskanäle angeben, z. B. „1, 2“.")
             line["output_channels"] = parse_channels(self.out_ch.text() or "1, 2")
         line["in_gain_db"] = round(self.in_gain.value(), 1)
+        for key, value, default in (("stereo", self.stereo.isChecked(), False),
+                                    ("opus_mode", self.opus_mode.currentData(), "voip"),
+                                    ("opus_bitrate_kbps", self.opus_kbps.value(), 96)):
+            if value == default:
+                line.pop(key, None)  # keep the file free of defaults
+            else:
+                line[key] = value
         line["out_gain_db"] = round(self.out_gain.value(), 1)
         if self.tone is not None:
             if self.tone.value() > 0:

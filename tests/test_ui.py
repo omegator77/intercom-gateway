@@ -117,3 +117,40 @@ def test_start_with_bad_config_shows_error_instead_of_spawning(app, tmp_path):
         assert find_running(tmp_path) is None
     finally:
         win.close()
+
+
+def _dialog(line):
+    from gateway.ui.settings import LineDialog
+
+    return LineDialog(line, "http://127.0.0.1:9", "portaudio", [("DVS Receive 1-2", 2)], [("DVS Transmit 1-2", 2)],
+                      stored_pw=True)
+
+
+BASE_LINE = {"name": "PGM", "production_id": "1", "line_id": "1", "username": "u", "password": "p",
+             "input_device": "DVS Receive 1-2"}
+
+
+def test_line_dialog_shows_and_saves_stereo_and_opus_settings(app):
+    d = _dialog({**BASE_LINE, "stereo": True, "input_channels": [0, 1], "opus_mode": "audio",
+                 "opus_bitrate_kbps": 128})
+    assert d.stereo.isChecked() and d.opus_mode.currentData() == "audio" and d.opus_kbps.value() == 128
+    line = d._build()
+    assert line["stereo"] is True and line["opus_mode"] == "audio" and line["opus_bitrate_kbps"] == 128
+    assert line["input_channels"] == [0, 1]
+
+    d.opus_mode.setCurrentIndex(d.opus_mode.findData("voip"))
+    d.opus_kbps.setValue(96)
+    d.stereo.setChecked(False)
+    line = d._build()
+    assert not {"stereo", "opus_mode", "opus_bitrate_kbps"} & set(line)  # defaults are not written to the file
+
+
+def test_line_dialog_defaults_for_an_old_line_and_stereo_needs_two_channels(app):
+    d = _dialog(BASE_LINE)
+    assert not d.stereo.isChecked() and d.opus_mode.currentData() == "voip" and d.opus_kbps.value() == 96
+    d.stereo.setChecked(True)
+    d.in_ch.setText("1")
+    with pytest.raises(ValueError, match="zwei"):
+        d._build()
+    d.in_ch.setText("1, 2")
+    assert d._build()["stereo"] is True

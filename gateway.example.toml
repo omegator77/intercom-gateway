@@ -30,6 +30,11 @@ password_env = "GW_REGIE_PASSWORD"
 input_device = "DVS Receive 1-2"
 input_channels = [0]        # 0 = left of the pair, 1 = right; several = mixed to mono
 in_gain_db = 0.0
+# Sound quality of what is sent into the line (defaults = how it always was: mono, speech, 96 kbit/s).
+# For programme sound from a desk: stereo = true with two channels, opus_mode = "audio", ~128 kbit/s.
+# stereo = false
+# opus_mode = "voip"        # "voip" = tuned for speech, "audio" = for music / programme sound
+# opus_bitrate_kbps = 96    # 16..256
 output_device = "DVS Transmit 1-2"
 output_channels = [0, 1]    # the line is mono: played on these channels
 out_gain_db = 0.0           # the media bridge's mix is quiet (measured ~ -9 dB); raise here

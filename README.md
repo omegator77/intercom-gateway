@@ -80,6 +80,9 @@ Zustandsdateien und Log liegen unter `%LOCALAPPDATA%\intercom-gateway`
 |---|---|
 | `input_device` / `input_channels` | Aufnahmegerät und Kanäle. Mehrere Kanäle werden zu Mono gemischt. |
 | `output_device` / `output_channels` | Wiedergabegerät. Die Line ist mono und wird auf diesen Kanälen ausgegeben. |
+| `stereo` | `true` sendet genau zwei Eingangskanäle als Stereo statt als Mono-Mischung (Standard `false`). |
+| `opus_mode` | `"voip"` (Standard, auf Sprache getrimmt) oder `"audio"` (für Musik / Programmton). |
+| `opus_bitrate_kbps` | Datenrate des gesendeten Tons, 16–256 (Standard 96). Für Programmton z. B. 128. |
 | `in_gain_db` / `out_gain_db` | Pegelanpassung in dB. Es gibt keine automatische Regelung. |
 | `relay_type` | `ssrc-rewrite` (Standard) oder `mixed`. `mixed` wird nicht empfohlen. |
 
