@@ -411,3 +411,83 @@ def test_the_window_tells_how_the_companion_link_is_doing():
     assert "schon ein anderer Client" in companion_text("busy")
     assert companion_text("error: ConnectionRefusedError: x") == "Companion nicht erreichbar"
     assert companion_text("connecting").startswith("Companion verbindet")
+
+
+# ---------------------------------------------------------------- microphone controls in the main window, listen-only programme tile
+
+def test_the_main_window_changes_and_remembers_the_microphone_without_reconnecting(app, tmp_path):
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    win = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)
+    try:
+        assert not win.mic_gain.isEnabled() and not win.agc_box.isEnabled()  # nothing to adjust before connecting
+        win.connect_now()
+        assert pump(app, until=lambda: win.cards["Regie"].pill.text() == "Verbunden" and win.mic_gain.isEnabled())
+        eng = win.engine
+        workers = dict(eng.workers)
+        assert win.mic_gain.value() == 0 and not win.agc_box.isChecked() and win.noise_box.currentData() == 0
+
+        win.mic_gain.setValue(9)
+        win.agc_box.setChecked(True)
+        win.echo_box.setChecked(True)
+        win.noise_box.setCurrentIndex(win.noise_box.findData(3))
+        assert eng.mic_gain_db == 9.0 and eng.agc and eng.echo and eng.noise == 3
+        assert eng.hub._proc is not None and eng.hub.mic_gain_db == 9.0  # live in the audio
+        assert win.mic_gain_text.text() == "+9 dB"
+        assert dict(eng.workers) == workers  # no line was reconnected
+        assert pump(app, until=lambda: tomlio.load_raw(cfg).get("audio", {}).get("mic_gain_db") == 9.0, timeout=3)
+        audio = tomlio.load_raw(cfg)["audio"]
+        assert audio["auto_gain"] is True and audio["echo_cancellation"] is True and audio["noise_suppression"] == 3
+        assert tomlio.load_raw(cfg)["line"][0]["ptt_key"] == "f1"  # the rest of the file is untouched
+
+        win.agc_box.setChecked(False)
+        win.echo_box.setChecked(False)
+        win.noise_box.setCurrentIndex(win.noise_box.findData(0))
+        win._persist_audio()
+        audio = tomlio.load_raw(cfg)["audio"]
+        assert not {"auto_gain", "echo_cancellation", "noise_suppression"} & set(audio)  # defaults are not written
+    finally:
+        win.close()
+
+    # the next start uses what was set
+    from intercom_client.config import load_client_config
+
+    assert load_client_config(cfg).audio.mic_gain_db == 9.0
+
+
+def test_a_change_made_just_before_closing_is_still_saved(app, tmp_path):
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    win = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)
+    win.connect_now()
+    assert pump(app, until=lambda: win.mic_gain.isEnabled())
+    win.mic_gain.setValue(-5)
+    win.close()  # before the save timer fired
+    assert tomlio.load_raw(cfg)["audio"]["mic_gain_db"] == -5.0
+
+
+def test_the_programme_tile_has_no_talk_buttons(app, tmp_path, monkeypatch):
+    class ProgramWorker(FakeWorker):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.program_line = self.cfg.name == "Technik"
+
+        def status(self):
+            return {**super().status(), "program_line": self.program_line}
+
+    monkeypatch.setattr(engine_mod, "LineWorker", ProgramWorker)
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    win = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)
+    try:
+        win.connect_now()
+        assert pump(app, until=lambda: "Technik" in win.cards and win.cards["Technik"].tag.text().startswith("Programm"),
+                    timeout=10)
+        technik, regie = win.cards["Technik"], win.cards["Regie"]
+        assert technik.talk.isHidden() and technik.latch.isHidden() and technik.in_meter.isHidden()
+        assert not technik.listen.isHidden() and not technik.volume.isHidden()  # listening is still adjustable
+        assert not regie.talk.isHidden() and not regie.latch.isHidden()
+        win.engine.ptt("Technik", True)
+        assert not win.engine.controls["Technik"].talk.held
+    finally:
+        win.close()

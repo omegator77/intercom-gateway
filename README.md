@@ -46,6 +46,12 @@ intercom-client            # Oberfläche; beim ersten Start öffnen sich die Ein
   Das Modul nimmt nur **einen** Client an: entweder die Web-App oder dieser Client. Wird die Verbindung getrennt,
   während eine Sprechtaste gehalten wird, lässt der Client sie los.
 - Die anderen sehen dich unter dem Namen deines Kontos (Alias in den User Settings der Web-App).
+- **Im Hauptfenster** lassen sich Mikrofon-Pegel, Echo-Unterdrückung, Rauschunterdrückung und Auto-Pegel **während
+  der Verbindung** ändern, ohne dass eine Leitung neu verbindet. Die Werte werden für den nächsten Start gespeichert.
+  Der Auto-Pegel (WebRTC-AGC) hebt Sprache um etwa 7 dB an und begrenzt laute Spitzen; er gleicht keine großen
+  Pegelunterschiede aus, den Grundpegel stellt man mit dem Regler ein.
+- Die **Programm-Leitung** ist nur zum Hören: Sie hat keine Sprechen-/Dauer-Tasten, und weder Tasten noch Companion
+  sprechen dort hinein.
 - **Mikrofon-Aufbereitung** (Einstellungen → Mikrofon-Aufbereitung): Echo-Unterdrückung, Rauschunterdrückung (4 Stufen)
   und automatische Pegelregelung, mit den Voreinstellungen „Headset" (alles aus, beste Qualität) und „Lautsprecher"
   (Echo + Rauschen). Das ist das WebRTC-Audiomodul (Paket `aec-audio-processing`), dieselbe Algorithmen-Familie wie im

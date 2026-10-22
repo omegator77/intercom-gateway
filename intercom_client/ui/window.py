@@ -7,8 +7,8 @@ from pathlib import Path
 import threading
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QScrollArea, QSlider,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
+                               QScrollArea, QSlider, QVBoxLayout, QWidget)
 
 from gateway import credentials, tomlio
 from gateway.ui.style import muted
@@ -17,7 +17,7 @@ from gateway.ui.window import STATE_TEXT, Meter, db_text, fmt_duration, people_h
 from ..config import ClientCfg, ConfigError, load_client_config
 from ..engine import ClientEngine
 from ..hub import make_hub
-from .settings import ClientSettingsDialog
+from .settings import NOISE_LEVELS, ClientSettingsDialog
 
 log = logging.getLogger("client.ui")
 
@@ -113,7 +113,8 @@ class LineCard(QFrame):
         row.addWidget(self.volume)
         row.addWidget(self.volume_text)
         row.addSpacing(16)
-        row.addWidget(QLabel("Senden"))
+        self.send_label = QLabel("Senden")
+        row.addWidget(self.send_label)
         self.in_meter = Meter()
         row.addWidget(self.in_meter, 1)
         row.addSpacing(8)
@@ -164,6 +165,8 @@ class LineCard(QFrame):
         self.pill.setStyleSheet(f"background:{color}; color:white; border-radius:9px; padding:2px 10px; font-weight:600;")
         self.since.setText(f"verbunden seit {fmt_duration(s['uptime_s'])}" if s["state"] == "connected" else "")
         program = bool(s.get("program")) and enabled
+        for w in (self.talk, self.latch, self.send_label, self.in_meter):
+            w.setVisible(not program)  # the programme line is listen-only: no talk buttons there
         self.tag.setVisible(program)
         if program:
             dimmed = bool(s.get("dimmed"))
@@ -241,6 +244,36 @@ class MainWindow(QMainWindow):
         self.out_meter = Meter()
         bar.addWidget(self.out_meter)
         root.addLayout(bar)
+
+        # the microphone, adjustable while the lines keep running
+        mic = QHBoxLayout()
+        mic.addWidget(QLabel("Mikrofon-Pegel"))
+        self.mic_gain = QSlider(Qt.Horizontal)
+        self.mic_gain.setRange(-20, 30)
+        self.mic_gain.setFixedWidth(200)
+        self.mic_gain_text = QLabel("+0 dB")
+        self.mic_gain_text.setMinimumWidth(52)
+        self.echo_box = QCheckBox("Echo-Unterdrückung")
+        self.echo_box.setToolTip("Für Lautsprecher statt Kopfhörer. Mit Headset aus lassen.")
+        self.noise_box = QComboBox()
+        for label, value in NOISE_LEVELS:
+            self.noise_box.addItem(f"Rauschen: {label}", value)
+        self.noise_box.setToolTip("Rauschunterdrückung")
+        self.agc_box = QCheckBox("Auto-Pegel")
+        self.agc_box.setToolTip("Automatische Pegelregelung (WebRTC): hebt die Sprache um etwa 7 dB an und begrenzt "
+                                "laute Spitzen. Kein vollständiger Pegelausgleich - den Grundpegel stellst du mit dem "
+                                "Regler ein.")
+        for w in (self.mic_gain, self.echo_box, self.noise_box, self.agc_box):
+            w.setFocusPolicy(Qt.NoFocus)
+            w.setEnabled(False)
+        mic.addWidget(self.mic_gain)
+        mic.addWidget(self.mic_gain_text)
+        mic.addSpacing(12)
+        mic.addWidget(self.echo_box)
+        mic.addWidget(self.noise_box)
+        mic.addWidget(self.agc_box)
+        mic.addStretch(1)
+        root.addLayout(mic)
         root.addWidget(self.status)
 
         self.warning = QLabel()
@@ -258,6 +291,13 @@ class MainWindow(QMainWindow):
         self.scroll.setWidget(self.cards_host)
         root.addWidget(self.scroll, 1)
 
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.timeout.connect(self._persist_audio)
+        self.mic_gain.valueChanged.connect(self._mic_gain_changed)
+        self.echo_box.toggled.connect(self._processing_changed)
+        self.noise_box.currentIndexChanged.connect(self._processing_changed)
+        self.agc_box.toggled.connect(self._processing_changed)
         self.started.connect(self._started)
         self.btn_connect.clicked.connect(self.toggle_connection)
         self.btn_mute_all.clicked.connect(lambda: self.engine and self.engine.set_global_mute(self.btn_mute_all.isChecked()))
@@ -335,6 +375,60 @@ class MainWindow(QMainWindow):
             self.cards[line.name] = card
             self.cards_layout.addWidget(card)
 
+    # -- microphone: live, and remembered for the next start
+
+    def _mic_gain_changed(self, db: int) -> None:
+        self.mic_gain_text.setText(f"{db:+d} dB")
+        if self.engine:
+            self.engine.set_mic_gain_db(db)
+            self._save_timer.start(700)
+
+    def _processing_changed(self) -> None:
+        if self.engine:
+            self.engine.set_processing(self.echo_box.isChecked(), int(self.noise_box.currentData()),
+                                       self.agc_box.isChecked())
+            self._save_timer.start(700)
+
+    def _persist_audio(self) -> None:
+        eng = self.engine
+        if eng is None or not self.config_path.exists():
+            return
+        try:
+            raw = tomlio.load_raw(self.config_path)
+            audio = dict(raw.get("audio") or {})
+            audio["mic_gain_db"] = round(float(eng.mic_gain_db), 1)
+            for key, value, default in (("echo_cancellation", eng.echo, False), ("noise_suppression", eng.noise, 0),
+                                        ("auto_gain", eng.agc, False)):
+                if value == default:
+                    audio.pop(key, None)
+                else:
+                    audio[key] = value
+            raw["audio"] = audio
+            tomlio.save(self.config_path, raw)
+        except OSError as e:
+            log.warning("could not remember the microphone settings: %s", e)
+
+    def _sync_mic_controls(self, s: dict) -> None:
+        """Show what the engine has (set on connect, and when something else changes it); never fight the user."""
+        gain = int(round(s["mic_gain_db"]))
+        if not self.mic_gain.isSliderDown() and self.mic_gain.value() != gain:
+            self.mic_gain.blockSignals(True)
+            self.mic_gain.setValue(gain)
+            self.mic_gain.blockSignals(False)
+        self.mic_gain_text.setText(f"{gain:+d} dB")
+        for box, value in ((self.echo_box, s["echo"]), (self.agc_box, s["agc"])):
+            if box.isChecked() != value:
+                box.blockSignals(True)
+                box.setChecked(value)
+                box.blockSignals(False)
+        idx = self.noise_box.findData(s["noise"])
+        if idx >= 0 and self.noise_box.currentIndex() != idx:
+            self.noise_box.blockSignals(True)
+            self.noise_box.setCurrentIndex(idx)
+            self.noise_box.blockSignals(False)
+        for w in (self.mic_gain, self.echo_box, self.noise_box, self.agc_box):
+            w.setEnabled(True)
+
     # -- refresh
 
     def _tick(self) -> None:
@@ -345,10 +439,13 @@ class MainWindow(QMainWindow):
             self.out_meter.set_db(-120.0)
             self.btn_mute_all.setChecked(False)
             self.btn_mute_all.setStyleSheet("")
+            for w in (self.mic_gain, self.echo_box, self.noise_box, self.agc_box):
+                w.setEnabled(False)
             for card in self.cards.values():
                 card.show_off()
             return
         s = eng.snapshot()
+        self._sync_mic_controls(s)
         self.mic_meter.set_db(s["mic_dbfs"])
         self.out_meter.set_db(s["out_dbfs"])
         self.btn_mute_all.setChecked(s["global_mute"])
@@ -388,6 +485,9 @@ class MainWindow(QMainWindow):
         self.connect_now()  # new settings take effect by connecting again
 
     def closeEvent(self, event) -> None:
+        if self._save_timer.isActive():
+            self._save_timer.stop()
+            self._persist_audio()  # a change made a moment ago must not be lost
         self.timer.stop()
         self.disconnect_now()
         super().closeEvent(event)

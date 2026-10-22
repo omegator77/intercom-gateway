@@ -121,12 +121,8 @@ class AudioHub:
         self._dimmer = Dimmer(ClientDim(amount_db=0))  # off until the engine sets the configured values
         self.processing_error: str | None = None  # why the configured echo/noise processing is not running
         self._proc: MicProcessor | None = None
-        if cfg.echo_cancellation or cfg.noise_suppression or cfg.auto_gain:
-            try:
-                self._proc = MicProcessor(cfg.echo_cancellation, cfg.noise_suppression, cfg.auto_gain)
-            except ProcessingUnavailable as e:
-                self.processing_error = str(e)
-                log.warning("%s", e)
+        self.set_processing(cfg.echo_cancellation, cfg.noise_suppression, cfg.auto_gain)
+        self.mic_gain_db = cfg.mic_gain_db
         self._mic_gain = db_to_lin(cfg.mic_gain_db)
         self._out_gain = db_to_lin(cfg.output_gain_db)
         self._lines: tuple[SharedLineAudio, ...] = ()
@@ -143,6 +139,24 @@ class AudioHub:
     def detach(self, line: SharedLineAudio) -> None:
         with self._lock:
             self._lines = tuple(x for x in self._lines if x is not line)
+
+    def set_mic_gain_db(self, db: float) -> None:
+        """Takes effect with the next block; the lines are not touched."""
+        self.mic_gain_db = float(db)
+        self._mic_gain = db_to_lin(self.mic_gain_db)
+
+    def set_processing(self, echo: bool, noise: int, agc: bool) -> None:
+        """Switch echo cancellation / noise suppression / automatic gain while running. A new processor is built
+        and swapped in (the old one is used until then); with everything off the signal is passed on untouched."""
+        self.processing_error = None
+        proc = None
+        if echo or noise or agc:
+            try:
+                proc = MicProcessor(echo, noise, agc)
+            except ProcessingUnavailable as e:
+                self.processing_error = str(e)
+                log.warning("%s", e)
+        self._proc = proc
 
     def set_dim(self, dim: ClientDim) -> None:
         self._dimmer = Dimmer(dim)
@@ -187,7 +201,8 @@ class AudioHub:
         silence = self._silence[: len(mic)]
         muted = self.global_mute
         for line in self._lines:
-            line.track.push(mic if (line.control.talk.transmitting and not muted) else silence)
+            talking = line.control.talk.transmitting and not muted and not line.control.program
+            line.track.push(mic if talking else silence)
 
     def mix_output(self, frames: int) -> np.ndarray:
         """The next `frames` samples for the output: every line at its own volume, summed and limited."""

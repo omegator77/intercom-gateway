@@ -347,6 +347,9 @@ class StubEngine:
         self.calls = []
         self.global_mute = False
 
+    def can_talk(self, name):
+        return not self.controls[name].program
+
     def ptt(self, name, down):
         self.calls.append(("ptt", name, down))
 

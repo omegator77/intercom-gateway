@@ -143,6 +143,8 @@ class CompanionLink:
         name = eng.order[n - 1]
         if not eng.line_enabled.get(name, True):
             return  # a disconnected line ignores its buttons
+        if action in ("push_to_talk_start", "toggle_input_mute") and not eng.can_talk(name):
+            return  # the programme line is listen-only
         if action == "push_to_talk_start":
             self._holds.add(name)
             eng.ptt(name, True)

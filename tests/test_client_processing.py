@@ -416,3 +416,111 @@ def test_the_hub_runs_for_a_while_with_the_real_processing_switched_on():
             hub.process_mic(near[i:i + BLOCK] + 0.3 * out)  # near-end speech plus what comes back from the speakers
         assert hub.mic_level.dbfs > -80  # the microphone path keeps delivering signal
     asyncio.run(go())
+
+
+# ---------------------------------------------------------------- microphone settings while running, programme line is listen-only
+
+def test_mic_gain_changes_with_the_next_block_without_touching_the_lines():
+    async def go():
+        hub, talk, prog, other = hub_with(asyncio.get_running_loop(), ClientDim(amount_db=0))
+        talk.control.talk.press()
+        for _ in range(2):
+            hub.process_mic(np.full(BLOCK, 0.1, np.float32))
+        assert np.allclose(talk.track._take(), 0.1)
+        hub.set_mic_gain_db(6.0)
+        for _ in range(2):
+            hub.process_mic(np.full(BLOCK, 0.1, np.float32))
+        assert np.allclose(talk.track._take(), 0.1 * 10 ** (6 / 20), atol=1e-4)
+        assert hub.mic_gain_db == 6.0 and talk in hub._lines  # nothing was detached or rebuilt
+    asyncio.run(go())
+
+
+def test_processing_can_be_switched_on_and_off_while_running():
+    hub = AudioHub(ClientAudio(backend="synthetic"))
+    assert hub.processing == "off"
+    hub.set_processing(True, 2, False)
+    assert hub.processing == "on" and hub._proc.echo and hub._proc.noise == 2
+    old = hub._proc
+    hub.set_processing(False, 0, True)
+    assert hub._proc is not old and not hub._proc.echo and hub._proc.agc and hub.processing == "on"
+    hub.set_processing(False, 0, False)
+    assert hub._proc is None and hub.processing == "off"
+
+
+def test_switching_processing_on_without_the_library_reports_it_and_keeps_the_audio_going(monkeypatch):
+    def boom(*a, **k):
+        raise ProcessingUnavailable("nicht verfügbar")
+
+    hub = AudioHub(ClientAudio(backend="synthetic"))
+    monkeypatch.setattr(hub_mod, "MicProcessor", boom)
+    hub.set_processing(True, 0, False)
+    assert hub._proc is None and hub.processing == "nicht verfügbar"
+    hub.set_processing(False, 0, False)
+    assert hub.processing == "off"  # the old error is gone once nothing is asked for
+
+
+def test_the_automatic_gain_lifts_quiet_speech_and_limits_loud_peaks():
+    def run(peak):
+        x = speech_like(8, 1) * (peak / 0.3)
+        p = MicProcessor(False, 0, True)
+        out = np.concatenate([p.process(x[i:i + FRAME]) for i in range(0, len(x) - FRAME + 1, FRAME)])
+        seg = slice(SR * 4, SR * 8)
+        return 20 * np.log10(rms(out[seg]) / rms(x[seg])), float(np.max(np.abs(out[seg])))
+
+    quiet_gain, _ = run(0.01)
+    loud_gain, loud_peak = run(0.9)
+    assert 3.0 < quiet_gain < 12.0  # about +7 dB, measured
+    assert loud_gain < quiet_gain and loud_peak <= 1.0  # less at full scale, never over
+
+
+def test_the_programme_line_gets_no_microphone_even_if_somebody_set_it_to_talk():
+    async def go():
+        hub, talk, prog, other = hub_with(asyncio.get_running_loop(), ClientDim(amount_db=0))
+        prog.control.talk.press()
+        prog.control.talk.toggle_latch()
+        for _ in range(2):
+            hub.process_mic(np.full(BLOCK, 0.3, np.float32))
+        assert not np.any(prog.track._take())  # silence only
+    asyncio.run(go())
+
+
+def test_the_engine_does_not_let_anybody_talk_into_the_programme_line(fakes):
+    c = cfg(line=[{"name": "Regie", "production_id": 4, "line_id": 1},
+                  {"name": "Programm", "production_id": 4, "line_id": 2}])
+    eng = engine_mod.ClientEngine(c, enable_hotkeys=False)
+    eng.start()
+    try:
+        assert wait_for(lambda: eng.controls["Programm"].program)
+        eng.ptt("Programm", True)
+        eng.toggle_latch("Programm")
+        eng.handle_hotkey("ptt:Programm", "down")
+        assert not eng.controls["Programm"].talk.transmitting
+        snap = eng.snapshot()["lines"][1]
+        assert snap["program"] and not snap["talking"]
+        eng.ptt("Regie", True)  # a normal line is not affected
+        assert eng.controls["Regie"].talk.held
+        eng.controls["Programm"].talk.latched = True  # a latch left over from before the flag was known can be cleared
+        eng.toggle_latch("Programm")
+        assert not eng.controls["Programm"].talk.latched
+    finally:
+        eng.stop()
+
+
+def test_the_engine_changes_the_microphone_live_and_remembers_what_it_was_told_before_the_audio_opened(fakes):
+    eng = engine_mod.ClientEngine(cfg(), enable_hotkeys=False)
+    eng.set_mic_gain_db(99)
+    assert eng.mic_gain_db == 40.0  # clamped
+    eng.set_mic_gain_db(4)
+    eng.set_processing(echo=True, noise=7, agc=None)
+    assert (eng.echo, eng.noise, eng.agc) == (True, 4, False)
+    eng.start()
+    try:
+        assert wait_for(lambda: eng.hub is not None and eng.hub.mic_gain_db == 4.0)
+        assert eng.hub._proc is not None and eng.hub._proc.echo and eng.hub._proc.noise == 4
+        eng.set_mic_gain_db(-3)
+        eng.set_processing(agc=True)
+        assert eng.hub.mic_gain_db == -3.0 and eng.hub._proc.agc and eng.hub._proc.echo
+        snap = eng.snapshot()
+        assert (snap["mic_gain_db"], snap["echo"], snap["noise"], snap["agc"]) == (-3.0, True, 4, True)
+    finally:
+        eng.stop()

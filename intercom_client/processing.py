@@ -26,7 +26,7 @@ def _to_bytes(x: np.ndarray) -> bytes:
 
 
 def _from_bytes(b: bytes) -> np.ndarray:
-    return np.frombuffer(b, dtype="<i2").astype(np.float32) / 32767.0
+    return np.frombuffer(b, dtype="<i2").astype(np.float32) / 32768.0
 
 
 class MicProcessor:

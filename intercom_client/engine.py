@@ -47,6 +47,10 @@ class ClientEngine:
         self.line_enabled: dict[str, bool] = {l.name: True for l in cfg.lines}  # connected (or connecting) by choice
         self._tasks: dict[str, asyncio.Task] = {}
         self._closing = False  # shutting down: no new line worker may be started any more
+        a = cfg.audio
+        # microphone settings as they are right now (the window can change them while the lines keep running)
+        self.mic_gain_db = a.mic_gain_db
+        self.echo, self.noise, self.agc = a.echo_cancellation, a.noise_suppression, a.auto_gain
         self._companion: CompanionLink | None = None
         self._locks: dict[str, asyncio.Lock] = {}
         self._factory = None
@@ -95,6 +99,11 @@ class ClientEngine:
             hub = self.hub = self._hub_factory(self.cfg.audio)
             hub.global_mute = self._global_mute
             hub.set_dim(self.cfg.dim)
+            if (self.mic_gain_db, self.echo, self.noise, self.agc) != (
+                    self.cfg.audio.mic_gain_db, self.cfg.audio.echo_cancellation, self.cfg.audio.noise_suppression,
+                    self.cfg.audio.auto_gain):  # changed before the audio was open
+                hub.set_mic_gain_db(self.mic_gain_db)
+                hub.set_processing(self.echo, self.noise, self.agc)
             try:
                 await hub.start()
             except DeviceError as e:
@@ -250,9 +259,15 @@ class ClientEngine:
             except Exception:
                 log.exception("change listener failed")
 
+    def can_talk(self, name: str) -> bool:
+        """The programme line is for listening: nobody talks into it from here."""
+        return not self.controls[name].program
+
     def ptt(self, name: str, down: bool) -> None:
         talk = self.controls[name].talk
         if down:
+            if not self.can_talk(name):
+                return
             talk.press()
         else:
             talk.release()
@@ -264,8 +279,27 @@ class ClientEngine:
         self._notify()
 
     def toggle_latch(self, name: str) -> None:
-        self.controls[name].talk.toggle_latch()
+        talk = self.controls[name].talk
+        if not talk.latched and not self.can_talk(name):
+            return
+        talk.toggle_latch()
         self._notify()
+
+    def set_mic_gain_db(self, db: float) -> None:
+        self.mic_gain_db = max(-40.0, min(40.0, float(db)))
+        if self.hub:
+            self.hub.set_mic_gain_db(self.mic_gain_db)
+
+    def set_processing(self, echo: bool | None = None, noise: int | None = None, agc: bool | None = None) -> None:
+        """Change echo cancellation / noise suppression / automatic gain without reconnecting any line."""
+        if echo is not None:
+            self.echo = bool(echo)
+        if noise is not None:
+            self.noise = max(0, min(4, int(noise)))
+        if agc is not None:
+            self.agc = bool(agc)
+        if self.hub:
+            self.hub.set_processing(self.echo, self.noise, self.agc)
 
     def set_volume(self, name: str, pct: int) -> None:
         self.controls[name].volume_pct = max(0, min(150, int(pct)))
@@ -336,6 +370,10 @@ class ClientEngine:
             "error": self.error,
             "global_mute": self.global_mute,
             "companion": self._companion.status if self._companion else "off",
+            "mic_gain_db": self.mic_gain_db,
+            "echo": self.echo,
+            "noise": self.noise,
+            "agc": self.agc,
             "dimmed": bool(self.hub and self.hub.dimmed),
             "dim_db": self.cfg.dim.amount_db,
             "processing": self.hub.processing if self.hub else "off",
