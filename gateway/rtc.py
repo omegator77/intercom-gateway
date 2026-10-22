@@ -52,6 +52,19 @@ class _RxStream:
         self.decode_error_logged = False
 
 
+def parse_participants(data: dict, own_session: str | None = None) -> list[dict]:
+    """The server's line description -> [{name, active, whip}] of everyone else on the line, sorted by name.
+    `own_session` (this gateway's session id) is left out; malformed entries are skipped."""
+    people = []
+    for p in (data or {}).get("participants") or []:
+        if not isinstance(p, dict) or not p.get("name"):
+            continue
+        if own_session and p.get("sessionId") == own_session:
+            continue
+        people.append({"name": str(p["name"]), "active": bool(p.get("isActive")), "whip": bool(p.get("isWhip"))})
+    return sorted(people, key=lambda x: x["name"].lower())
+
+
 class LineConnection:
     def __init__(
         self,
@@ -202,6 +215,12 @@ class LineConnection:
                 self._on_pcm(chans[:, :2] if ch >= 2 else np.stack([pcm, pcm], axis=1), packet.ssrc)
             else:
                 self._on_pcm(pcm, packet.ssrc)
+
+    async def participants(self, production_id: str, line_id: str) -> list[dict]:
+        r = await self._http.get(f"{API}/production/{production_id}/line/{line_id}", headers=self._headers)
+        if r.status_code != 200:
+            raise SessionError(f"GET line -> HTTP {r.status_code}", r.status_code)
+        return parse_participants(r.json(), self.session_id)
 
     async def heartbeat(self) -> int:
         r = await self._http.get(f"{API}/heartbeat/{self.session_id}", headers=self._headers)

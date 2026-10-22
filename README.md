@@ -14,10 +14,11 @@ Browser angemeldet sein.
 
 ## Status
 
-Frühe Version (0.2.0). Lauffähig sind:
+Frühe Version (0.3.0). Lauffähig sind:
 
 - das Gateway ohne Oberfläche (`intercom-gateway`)
-- eine Desktop-Oberfläche (`intercom-gateway-ui`, PySide6) mit Start, Stopp und Pegelanzeige
+- eine Desktop-Oberfläche (`intercom-gateway-ui`, PySide6) mit Start, Stopp, Pegelanzeige und der Anzeige, wer sonst noch in der
+  Leitung ist (aktiv/inaktiv, WHIP; wird alle 5 Sekunden vom Server abgefragt und beeinflusst den Ton nie)
 - ein Windows-Installer, der mit `build.ps1` gebaut wird (siehe unten, noch nicht als fertiger Download veröffentlicht)
 
 Getestet wurde unter Windows mit Dante Virtual Soundcard. Das Gateway nutzt ausschließlich

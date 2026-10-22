@@ -173,3 +173,19 @@ def test_line_dialog_saves_stereo_output_limiter_and_buffer(app):
     d.out_ch.setText("1")
     with pytest.raises(ValueError, match="zwei"):
         d._build()
+
+
+def test_line_card_shows_who_else_is_on_the_line_only_while_connected(app):
+    from gateway.ui.window import LineCard
+
+    card = LineCard("PGM")
+    base = {"state": "connected", "uptime_s": 5, "in_dbfs": -60.0, "out_dbfs": -60.0, "audio": {},
+            "production_id": "1", "line_id": "2", "username": "u"}
+    card.show_status({**base, "participants": [{"name": "Anna", "active": True, "whip": False}]})
+    assert not card.people.isHidden() and "Anna" in card.people.text()
+    card.show_status({**base, "participants": None})  # unknown: nothing shown rather than something stale
+    assert card.people.isHidden()
+    card.show_status({**base, "state": "backoff", "participants": [{"name": "Anna", "active": True, "whip": False}]})
+    assert card.people.isHidden()
+    card.show_status({**base, "participants": []})
+    assert "niemand" in card.people.text() and not card.people.isHidden()

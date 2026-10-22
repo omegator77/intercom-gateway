@@ -22,6 +22,8 @@ log = logging.getLogger("gateway.session")
 
 HEARTBEAT_S = 10.0  # same cadence as the browser frontend
 MAX_HEARTBEAT_FAILURES = 3
+PARTICIPANTS_S = 5.0  # how often the list of people on the line is refreshed (display only)
+PARTICIPANTS_MAX_FAILURES = 3  # then the list is shown as unknown instead of stale
 STABLE_S = 60.0  # connected this long -> next failure starts the backoff from scratch
 BACKOFF_MAX_S = 30.0
 
@@ -57,6 +59,7 @@ class LineWorker:
         self.connected_since: float | None = None
         self.audio: LineAudio | None = None
         self.conn: LineConnection | None = None
+        self.participants: list[dict] | None = None  # others on the line; None = not known (not connected / fetch failing)
 
     def stop(self) -> None:
         self._stop.set()
@@ -85,6 +88,7 @@ class LineWorker:
                 log.warning("[%s] session ended: %s", self.cfg.name, self.last_error)
             self.session_id = None
             self.connected_since = None
+            self.participants = None
             if self._stop.is_set():
                 break
             backoff = 1.0 if time.monotonic() - started > STABLE_S else min(backoff * 2, BACKOFF_MAX_S)
@@ -143,6 +147,7 @@ class LineWorker:
         stop_t = asyncio.ensure_future(self._stop.wait())
         dead_t = asyncio.ensure_future(conn.dead.wait())
         failures = 0
+        people_t = asyncio.ensure_future(self._poll_participants(conn))
         try:
             while True:
                 done, _ = await asyncio.wait({stop_t, dead_t}, timeout=HEARTBEAT_S, return_when=asyncio.FIRST_COMPLETED)
@@ -170,6 +175,26 @@ class LineWorker:
         finally:
             stop_t.cancel()
             dead_t.cancel()
+            people_t.cancel()
+            self.participants = None
+
+    async def _poll_participants(self, conn: LineConnection) -> None:
+        """Display only: who else is on the line. Never raises and never touches the session or the audio -
+        a failing or slow fetch just leaves the list as 'unknown'."""
+        failures = 0
+        while not self._stop.is_set():
+            try:
+                self.participants = await asyncio.wait_for(
+                    conn.participants(self.cfg.production_id, self.cfg.line_id), PARTICIPANTS_S)
+                failures = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                failures += 1
+                log.debug("[%s] fetching the participants failed (%d): %s", self.cfg.name, failures, e)
+                if failures >= PARTICIPANTS_MAX_FAILURES:
+                    self.participants = None
+            await self._sleep(PARTICIPANTS_S)
 
     def status(self) -> dict:
         in_db, out_db = self.audio.levels() if self.audio else (-120.0, -120.0)  # same floor as audio.Level
@@ -189,4 +214,5 @@ class LineWorker:
             "audio": self.audio.stats() if self.audio else {},
             "rx_lost": self.conn.rx_lost if self.conn else 0,
             "last_error": self.last_error,
+            "participants": self.participants,
         }

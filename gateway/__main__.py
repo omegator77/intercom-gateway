@@ -154,6 +154,10 @@ def cmd_status(home: Path) -> int:
     for l in s["lines"]:
         print(f"  {l['line']:16} {l['state']:10} in {l['in_dbfs']:6.1f} dBFS  out {l['out_dbfs']:6.1f} dBFS"
               f"  up {l['uptime_s']} s" + (f"  last error: {l['last_error']}" if l["last_error"] else ""))
+        people = l.get("participants")
+        if people is not None:
+            print("    on the line: " + (", ".join(p["name"] + ("" if p["active"] else " (inactive)")
+                                               + (" [WHIP]" if p["whip"] else "") for p in people) or "nobody else"))
     return 0
 
 

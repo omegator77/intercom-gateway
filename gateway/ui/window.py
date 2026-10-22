@@ -1,6 +1,7 @@
 """Main window: start/stop the gateway, one card per line with state and level meters, optional log."""
 from __future__ import annotations
 
+import html
 import threading
 import time
 from pathlib import Path
@@ -73,6 +74,21 @@ def db_text(db: float) -> str:
     return "–∞" if db <= -100 else f"{db:.0f} dB"
 
 
+def people_html(people: list[dict] | None) -> str:
+    """'Who else is on the line' as one line of rich text; '' when the server's list is not known."""
+    if people is None:
+        return ""
+    if not people:
+        return "<span style='color:#7a7f87;'>Sonst niemand in der Leitung</span>"
+    items = []
+    for p in people:
+        dot = "#2e9e57" if p["active"] else "#9aa0a6"
+        tags = ("" if p["active"] else " (inaktiv)") + (" · WHIP" if p.get("whip") else "")
+        items.append(f"<span style='color:{dot};'>●</span> {html.escape(p['name'])}"
+                     f"<span style='color:#7a7f87;'>{tags}</span>")
+    return "In der Leitung: " + "&nbsp;&nbsp;&nbsp;".join(items)
+
+
 class LineCard(QFrame):
     def __init__(self, name: str) -> None:
         super().__init__()
@@ -123,6 +139,11 @@ class LineCard(QFrame):
             grid.addWidget(val, row, 3)
         outer.addLayout(grid)
 
+        self.people = QLabel()
+        self.people.setWordWrap(True)
+        self.people.setTextFormat(Qt.RichText)
+        outer.addWidget(self.people)
+
         self.note = QLabel()
         self.note.setWordWrap(True)
         self.note.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -143,6 +164,7 @@ class LineCard(QFrame):
             m.set_db(-120)
             v.setText("")
         self.note.setVisible(False)
+        self.people.setVisible(False)
 
     def show_status(self, s: dict) -> None:
         self._set_state(s["state"])
@@ -154,6 +176,10 @@ class LineCard(QFrame):
         self.out_meter.set_db(s["out_dbfs"])
         self.in_val.setText(db_text(s["in_dbfs"]) if s.get("input_device") else "")
         self.out_val.setText(db_text(s["out_dbfs"]) if s.get("output_device") else "")
+
+        text = people_html(s.get("participants")) if s["state"] == "connected" else ""
+        self.people.setText(text)
+        self.people.setVisible(bool(text))
 
         parts, bad = [], False
         a = s.get("audio") or {}
