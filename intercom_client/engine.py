@@ -44,7 +44,7 @@ class ClientEngine:
         self.error: str | None = None  # why the engine could not start (devices, ...)
         self.hotkey_status = "off"  # "ok", "off", or the reason global hotkeys are unavailable
         self._global_mute = False  # kept here too, because the hub only exists once the audio is open
-        self.line_enabled: dict[str, bool] = {l.name: True for l in cfg.lines}  # connected (or connecting) by choice
+        self.line_enabled: dict[str, bool] = {l.name: l.autoconnect for l in cfg.lines}  # connected (or connecting) by choice
         self._tasks: dict[str, asyncio.Task] = {}
         self._closing = False  # shutting down: no new line worker may be started any more
         a = cfg.audio

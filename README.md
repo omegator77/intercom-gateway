@@ -37,6 +37,9 @@ intercom-client            # Oberfläche; beim ersten Start öffnen sich die Ein
 ```
 
 - „Trennen“ oben beendet alles; auf jeder Leitungskarte gibt es zusätzlich „Trennen“/„Verbinden“ nur für diese Leitung.
+  **Was du auf den Karten änderst, wird gemerkt:** eine getrennte Leitung bleibt beim nächsten Start getrennt
+  (`autoconnect = false` in der Konfiguration, auch einstellbar in der Spalte „Beim Start verbinden"), und die
+  Lautstärke jeder Leitung bleibt erhalten. „Trennen“ oben ändert daran nichts.
 - Einstellungen: Server und Konto, Leitungen hinzufügen (nach dem Login aus der Liste), pro Leitung Sprechen- und
   Dauer-Taste, Mikrofon und Kopfhörer, Taste für „Alles stumm". Beispiel: `client.example.toml`.
 - **Stream Deck über Bitfocus Companion** (Einstellungen → Stream Deck): Der Client spricht dasselbe Protokoll wie die

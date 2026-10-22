@@ -26,7 +26,7 @@ from ..hotkeys import normalize_key
 SYSTEM_DEFAULT = "Systemstandard"
 NOISE_LEVELS = [("Aus", 0), ("Niedrig", 1), ("Mittel", 2), ("Hoch", 3), ("Sehr hoch", 4)]
 DIM_DELAYS = [("Sofort", 0), ("0,25 s", 250), ("0,5 s", 500), ("1 s (Standard)", 1000), ("2 s", 2000)]
-COL_NAME, COL_LINE, COL_PTT, COL_LATCH = range(4)
+COL_NAME, COL_LINE, COL_PTT, COL_LATCH, COL_AUTO = range(5)
 
 
 def key_spec(sequence: QKeySequence) -> str | None:
@@ -123,8 +123,8 @@ class ClientSettingsDialog(QDialog):
         add_row.addWidget(self.line_pick, 1)
         add_row.addWidget(self.btn_add)
         v.addLayout(add_row)
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Name", "Leitung", "Sprechen-Taste", "Dauer-Taste"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Name", "Leitung", "Sprechen-Taste", "Dauer-Taste", "Beim Start verbinden"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -133,6 +133,7 @@ class ClientSettingsDialog(QDialog):
         hdr.setSectionResizeMode(COL_LINE, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(COL_PTT, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(COL_LATCH, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(COL_AUTO, QHeaderView.ResizeToContents)
         self.table.setMinimumHeight(110)
         v.addWidget(self.table)
         ops = QHBoxLayout()
@@ -149,7 +150,7 @@ class ClientSettingsDialog(QDialog):
         for line in raw.get("line", []):
             self._volumes[str(line.get("name", ""))] = int(line.get("volume", 100))
             self._add_row(line.get("name", ""), str(line.get("production_id", "")), str(line.get("line_id", "")),
-                          line.get("ptt_key"), line.get("latch_key"))
+                          line.get("ptt_key"), line.get("latch_key"), bool(line.get("autoconnect", True)))
 
         # -- audio
         box_audio = QGroupBox("Audio")
@@ -319,7 +320,8 @@ class ClientSettingsDialog(QDialog):
 
     # -- the lines table
 
-    def _add_row(self, name: str, prod: str, line: str, ptt: str | None, latch: str | None) -> None:
+    def _add_row(self, name: str, prod: str, line: str, ptt: str | None, latch: str | None,
+                 autoconnect: bool = True) -> None:
         r = self.table.rowCount()
         self.table.insertRow(r)
         self.table.setItem(r, COL_NAME, QTableWidgetItem(name))
@@ -329,6 +331,14 @@ class ClientSettingsDialog(QDialog):
         self.table.setItem(r, COL_LINE, ident)
         self.table.setCellWidget(r, COL_PTT, KeyEdit(ptt))
         self.table.setCellWidget(r, COL_LATCH, KeyEdit(latch))
+        self._set_auto(r, autoconnect)
+
+    def _set_auto(self, r: int, on: bool) -> None:
+        item = QTableWidgetItem()
+        item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+        item.setCheckState(Qt.Checked if on else Qt.Unchecked)
+        item.setTextAlignment(Qt.AlignCenter)
+        self.table.setItem(r, COL_AUTO, item)
 
     def _existing_ids(self) -> set[tuple[str, str]]:
         return {self.table.item(r, COL_LINE).data(Qt.UserRole) for r in range(self.table.rowCount())}
@@ -364,11 +374,13 @@ class ClientSettingsDialog(QDialog):
             self.table.cellWidget(row, COL_LATCH).deleteLater()
             self.table.setCellWidget(row, COL_PTT, KeyEdit(vals[2]))
             self.table.setCellWidget(row, COL_LATCH, KeyEdit(vals[3]))
+            self._set_auto(row, vals[4])
         self.table.setCurrentCell(t, 0)
 
     def _row_values(self, r: int):
         return (self.table.item(r, COL_NAME).text(), self.table.item(r, COL_LINE).data(Qt.UserRole),
-                self.table.cellWidget(r, COL_PTT).spec(), self.table.cellWidget(r, COL_LATCH).spec())
+                self.table.cellWidget(r, COL_PTT).spec(), self.table.cellWidget(r, COL_LATCH).spec(),
+                self.table.item(r, COL_AUTO).checkState() == Qt.Checked)
 
     # -- login and line list
 
@@ -454,7 +466,7 @@ class ClientSettingsDialog(QDialog):
                 dim[key] = value
         lines = []
         for r in range(self.table.rowCount()):
-            name, (prod, line), ptt, latch = self._row_values(r)
+            name, (prod, line), ptt, latch, auto = self._row_values(r)
             name = name.strip()
             if not name:
                 raise ValueError(f"Die Leitung in Zeile {r + 1} braucht einen Namen.")
@@ -464,6 +476,8 @@ class ClientSettingsDialog(QDialog):
                 entry["ptt_key"] = ptt
             if latch:
                 entry["latch_key"] = latch
+            if not auto:
+                entry["autoconnect"] = False
             lines.append(entry)
         if not lines:
             raise ValueError("Mindestens eine Leitung hinzufügen.")

@@ -294,7 +294,8 @@ class MainWindow(QMainWindow):
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
-        self._save_timer.timeout.connect(self._persist_audio)
+        self._save_timer.timeout.connect(self._persist)
+        self._seen_lines: dict | None = None  # per line (enabled, volume) as last seen; a difference is saved
         self.mic_gain.valueChanged.connect(self._mic_gain_changed)
         self.echo_box.toggled.connect(self._processing_changed)
         self.noise_box.currentIndexChanged.connect(self._processing_changed)
@@ -331,6 +332,7 @@ class MainWindow(QMainWindow):
 
     def connect_now(self) -> None:
         self.disconnect_now()
+        self._seen_lines = None
         cfg = self._load()
         if cfg is None:
             return
@@ -390,12 +392,23 @@ class MainWindow(QMainWindow):
                                        self.agc_box.isChecked())
             self._save_timer.start(700)
 
-    def _persist_audio(self) -> None:
+    def _persist(self) -> None:
+        """Write what the user changed in the window (microphone, which lines are switched off, line volumes) into the
+        config file, so the next start is the way this one was left. The rest of the file is kept."""
         eng = self.engine
         if eng is None or not self.config_path.exists():
             return
         try:
             raw = tomlio.load_raw(self.config_path)
+            for entry in raw.get("line", []):
+                name = entry.get("name")
+                if name not in eng.controls:
+                    continue
+                if eng.line_enabled.get(name, True):
+                    entry.pop("autoconnect", None)  # the default is not written
+                else:
+                    entry["autoconnect"] = False
+                entry["volume"] = int(eng.controls[name].volume_pct)
             audio = dict(raw.get("audio") or {})
             audio["mic_gain_db"] = round(float(eng.mic_gain_db), 1)
             for key, value, default in (("echo_cancellation", eng.echo, False), ("noise_suppression", eng.noise, 0),
@@ -407,7 +420,7 @@ class MainWindow(QMainWindow):
             raw["audio"] = audio
             tomlio.save(self.config_path, raw)
         except OSError as e:
-            log.warning("could not remember the microphone settings: %s", e)
+            log.warning("could not remember the settings: %s", e)
 
     def _sync_mic_controls(self, s: dict) -> None:
         """Show what the engine has (set on connect, and when something else changes it); never fight the user."""
@@ -449,6 +462,12 @@ class MainWindow(QMainWindow):
             return
         s = eng.snapshot()
         self._sync_mic_controls(s)
+        seen = {l["name"]: (l["enabled"], l["volume_pct"]) for l in s["lines"]}
+        if self._seen_lines is None:
+            self._seen_lines = seen  # what the config said at the start: nothing to save
+        elif seen != self._seen_lines:
+            self._seen_lines = seen  # a line switched off or on, or a volume moved (by button, key or Companion)
+            self._save_timer.start(700)
         self.mic_meter.set_db(s["mic_dbfs"])
         self.out_meter.set_db(s["out_dbfs"])
         self.btn_mute_all.setChecked(s["global_mute"])
@@ -490,7 +509,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         if self._save_timer.isActive():
             self._save_timer.stop()
-            self._persist_audio()  # a change made a moment ago must not be lost
+            self._persist()  # a change made a moment ago must not be lost
         self.timer.stop()
         self.disconnect_now()
         super().closeEvent(event)

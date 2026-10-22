@@ -46,3 +46,5 @@ line_id = "2"
 volume = 80
 ptt_key = "f2"
 latch_key = "shift+f2"
+# autoconnect = false        # diese Leitung beim Start nicht verbinden (wird auch automatisch gesetzt,
+#                            # wenn du sie im Fenster getrennt lässt)

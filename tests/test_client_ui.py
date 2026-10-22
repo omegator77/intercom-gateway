@@ -7,6 +7,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QKeySequence  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -443,7 +444,7 @@ def test_the_main_window_changes_and_remembers_the_microphone_without_reconnecti
         win.agc_box.setChecked(False)
         win.echo_box.setChecked(False)
         win.noise_box.setCurrentIndex(win.noise_box.findData(0))
-        win._persist_audio()
+        win._persist()
         audio = tomlio.load_raw(cfg)["audio"]
         assert not {"auto_gain", "echo_cancellation", "noise_suppression"} & set(audio)  # defaults are not written
     finally:
@@ -531,3 +532,140 @@ def test_the_main_window_shows_what_the_level_control_is_doing(app, tmp_path):
         assert pump(app, until=lambda: win.agc_box.text() == "Auto-Pegel")
     finally:
         win.close()
+
+
+# ---------------------------------------------------------------- remembering which lines were switched off
+
+def test_autoconnect_is_read_from_the_config_and_checked():
+    from intercom_client.config import ConfigError, parse_client_config
+
+    base = {"server": {"url": "https://x", "username": "a"}, "audio": {"backend": "synthetic"}}
+
+    def parse(line):
+        return parse_client_config({**base, "line": [{"name": "A", "production_id": 1, "line_id": 1, **line}]},
+                                   env={"INTERCOM_CLIENT_PASSWORD": "pw"})
+
+    assert parse({}).lines[0].autoconnect is True
+    assert parse({"autoconnect": False}).lines[0].autoconnect is False
+    with pytest.raises(ConfigError, match="autoconnect"):
+        parse({"autoconnect": "no"})
+
+
+def test_a_line_that_was_left_off_is_not_connected_at_the_start_but_can_be_switched_on(app, tmp_path):
+    from intercom_client.config import load_client_config
+
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    raw = tomlio.load_raw(cfg)
+    raw["line"][1]["autoconnect"] = False
+    tomlio.save(cfg, raw)
+    eng = engine_mod.ClientEngine(load_client_config(cfg), enable_hotkeys=False)
+    eng.start()
+    try:
+        assert pump(app, until=lambda: eng.snapshot()["lines"][0]["state"] == "connected")
+        r, t = eng.snapshot()["lines"]
+        assert (t["name"], t["enabled"], t["state"]) == ("Technik", False, "off")
+        assert [l.control.name for l in eng.hub._lines] == ["Regie"] and "Technik" not in eng.workers
+        eng.connect_line("Technik")
+        assert pump(app, until=lambda: eng.snapshot()["lines"][1]["state"] == "connected")
+        assert len(eng.hub._lines) == 2
+    finally:
+        eng.stop()
+
+
+def lines_in(cfg):
+    return {l["name"]: l for l in tomlio.load_raw(cfg)["line"]}
+
+
+def test_switching_a_line_off_on_its_card_is_remembered_for_the_next_start(app, tmp_path):
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    win = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)
+    try:
+        win.connect_now()
+        assert pump(app, until=lambda: all(c.pill.text() == "Verbunden" for c in win.cards.values()))
+        pump(app, 1.0)
+        assert "autoconnect" not in lines_in(cfg)["Regie"]  # nothing changed yet, nothing written
+
+        win.cards["Technik"].connect_btn.click()
+        assert pump(app, until=lambda: lines_in(cfg)["Technik"].get("autoconnect") is False, timeout=4)
+        assert "autoconnect" not in lines_in(cfg)["Regie"]  # only that line
+        assert lines_in(cfg)["Regie"]["ptt_key"] == "f1" and tomlio.load_raw(cfg)["hotkeys"]["global_mute"]  # the rest is kept
+
+        win.toggle_connection()  # the whole client goes away ...
+        pump(app, 1.0)
+        assert lines_in(cfg)["Technik"].get("autoconnect") is False and "autoconnect" not in lines_in(cfg)["Regie"]
+        win.toggle_connection()  # ... and comes back: Technik stays off
+        assert pump(app, until=lambda: win.cards["Regie"].pill.text() == "Verbunden")
+        assert win.cards["Technik"].pill.text() == "Getrennt" and win.cards["Technik"].connect_btn.text() == "Verbinden"
+
+        win.cards["Technik"].connect_btn.click()  # switched on again: the entry disappears from the file
+        assert pump(app, until=lambda: "autoconnect" not in lines_in(cfg)["Technik"], timeout=4)
+        assert pump(app, until=lambda: win.cards["Technik"].pill.text() == "Verbunden")
+    finally:
+        win.close()
+
+
+def test_a_line_switched_off_from_somewhere_else_is_remembered_too(app, tmp_path):
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    win = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)
+    try:
+        win.connect_now()
+        assert pump(app, until=lambda: win.cards["Regie"].pill.text() == "Verbunden")
+        pump(app, 0.5)
+        win.engine.disconnect_line("Regie")  # what a hotkey or a Companion button would do
+        assert pump(app, until=lambda: lines_in(cfg)["Regie"].get("autoconnect") is False, timeout=4)
+    finally:
+        win.close()
+
+
+def test_line_volumes_are_remembered_too(app, tmp_path):
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    win = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)
+    try:
+        win.connect_now()
+        assert pump(app, until=lambda: win.cards["Regie"].pill.text() == "Verbunden")
+        pump(app, 0.5)
+        win.cards["Technik"].volume.setValue(35)
+        assert pump(app, until=lambda: lines_in(cfg)["Technik"]["volume"] == 35, timeout=4)
+        assert lines_in(cfg)["Regie"]["volume"] == 90
+    finally:
+        win.close()
+    from intercom_client.config import load_client_config
+
+    assert [l.volume_pct for l in load_client_config(cfg).lines] == [90, 35]
+
+
+def test_the_settings_table_has_a_column_for_it_and_keeps_it_when_lines_move(app, tmp_path):
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    raw = tomlio.load_raw(cfg)
+    raw["line"][1]["autoconnect"] = False
+    tomlio.save(cfg, raw)
+    d = ClientSettingsDialog(cfg, device_lists=([], []))
+    assert d.table.columnCount() == 5 and d.table.horizontalHeaderItem(4).text() == "Beim Start verbinden"
+    assert d._row_values(0)[4] is True and d._row_values(1)[4] is False
+
+    d.table.setCurrentCell(1, 0)
+    d._move(-1)  # Technik (off) moves up: the flag moves with it
+    assert [d.table.item(r, 0).text() for r in range(2)] == ["Technik", "Regie"]
+    assert d._row_values(0)[4] is False and d._row_values(1)[4] is True
+
+    d.pw.setText("x")
+    d._accept()
+    by_name = {l["name"]: l for l in d.result_data["line"]}
+    assert by_name["Technik"]["autoconnect"] is False and "autoconnect" not in by_name["Regie"]
+
+    d.table.item(0, 4).setCheckState(Qt.Checked)  # switch it on again in the table
+    d._accept()
+    assert all("autoconnect" not in l for l in d.result_data["line"])
+
+
+def test_new_lines_start_connected(app, tmp_path):
+    d = dialog(tmp_path)
+    d._show_lines([AvailableLine("4", "Show", "3", "Kamera")])
+    d.line_pick.setCurrentIndex(0)
+    d._add_picked()
+    assert d._row_values(2)[4] is True

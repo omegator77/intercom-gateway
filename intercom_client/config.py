@@ -54,6 +54,7 @@ class ClientLine:
     volume_pct: int = 100
     ptt_key: str | None = None  # talk while held
     latch_key: str | None = None  # toggle "keep talking"
+    autoconnect: bool = True  # connect this line when the client starts (switching a line off on its card is remembered)
 
 
 @dataclass(frozen=True)
@@ -174,9 +175,12 @@ def parse_client_config(data: Mapping, env: Mapping[str, str] | None = None,
         vol = raw.get("volume", 100)
         if not isinstance(vol, int) or isinstance(vol, bool) or not VOLUME_RANGE[0] <= vol <= VOLUME_RANGE[1]:
             raise ConfigError(f"line {name!r}: volume must be a whole percent between {VOLUME_RANGE[0]} and {VOLUME_RANGE[1]}")
+        auto = raw.get("autoconnect", True)
+        if not isinstance(auto, bool):
+            raise ConfigError(f"line {name!r}: autoconnect must be true or false")
         lines.append(ClientLine(name, str(raw["production_id"]), str(raw["line_id"]), vol,
                                 _key(raw.get("ptt_key"), f"line {name!r}: ptt_key"),
-                                _key(raw.get("latch_key"), f"line {name!r}: latch_key")))
+                                _key(raw.get("latch_key"), f"line {name!r}: latch_key"), auto))
     if not lines:
         raise ConfigError("no [[line]] configured")
 
