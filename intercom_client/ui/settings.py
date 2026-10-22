@@ -9,9 +9,10 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-                               QGroupBox, QHBoxLayout, QHeaderView, QKeySequenceEdit, QLabel, QLineEdit, QPushButton,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+                               QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QKeySequenceEdit, QLabel,
+                               QLineEdit, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout,
+                               QWidget)
 
 from gateway import credentials, tomlio
 from gateway.auth import LoginError
@@ -41,6 +42,8 @@ class KeyEdit(QKeySequenceEdit):
         super().__init__()
         self.setMaximumSequenceLength(1)
         self.setClearButtonEnabled(True)
+        if hasattr(self, "setPlaceholderText"):  # Qt 6.4+
+            self.setPlaceholderText("Taste drücken")
         if spec:
             self.setKeySequence(QKeySequence("+".join(p.capitalize() if len(p) > 1 else p.upper()
                                                       for p in spec.split("+"))))
@@ -52,7 +55,7 @@ class KeyEdit(QKeySequenceEdit):
 class DeviceCombo(QComboBox):
     def __init__(self, names: list[tuple[str, int]], current: str | None) -> None:
         super().__init__()
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(220)
         self.addItem(SYSTEM_DEFAULT, "")
         for name, ch in names:
             self.addItem(f"{name}  ({ch} Kanäle)", name)
@@ -112,7 +115,7 @@ class ClientSettingsDialog(QDialog):
         v = QVBoxLayout(box_lines)
         add_row = QHBoxLayout()
         self.line_pick = QComboBox()
-        self.line_pick.setMinimumWidth(320)
+        self.line_pick.setMinimumWidth(240)
         self.line_pick.addItem("Erst anmelden, dann Leitungen hinzufügen …", None)
         self.btn_add = QPushButton("Hinzufügen")
         add_row.addWidget(self.line_pick, 1)
@@ -128,7 +131,7 @@ class ClientSettingsDialog(QDialog):
         hdr.setSectionResizeMode(COL_LINE, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(COL_PTT, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(COL_LATCH, QHeaderView.ResizeToContents)
-        self.table.setMinimumHeight(150)
+        self.table.setMinimumHeight(110)
         v.addWidget(self.table)
         ops = QHBoxLayout()
         self.btn_up, self.btn_down, self.btn_remove = QPushButton("↑"), QPushButton("↓"), QPushButton("Entfernen")
@@ -136,8 +139,9 @@ class ClientSettingsDialog(QDialog):
             ops.addWidget(b)
         ops.addStretch(1)
         hint = QLabel("Die Reihenfolge ist auch die Tastennummer am Stream Deck.")
+        hint.setWordWrap(True)
         muted(hint)
-        ops.addWidget(hint)
+        ops.addWidget(hint, 1)
         v.addLayout(ops)
         self._volumes: dict[str, int] = {}
         for line in raw.get("line", []):
@@ -178,12 +182,25 @@ class ClientSettingsDialog(QDialog):
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
 
-        lay = QVBoxLayout(self)
+        # The sections scroll, the buttons stay put: on a small or scaled-up screen the dialog is taller than
+        # the screen, and the buttons must never be out of reach.
+        content = QWidget()
+        lay = QVBoxLayout(content)
         for w in (box_srv, box_lines, box_audio, box_keys):
             lay.addWidget(w)
-        lay.addWidget(self.error)
-        lay.addWidget(buttons)
-        self.setMinimumWidth(720)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setWidget(content)
+        outer = QVBoxLayout(self)
+        outer.addWidget(self.scroll, 1)
+        outer.addWidget(self.error)
+        outer.addWidget(buttons)
+        screen = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        self.setMinimumWidth(min(720, screen.width() - 40))
+        wanted = content.sizeHint().height() + buttons.sizeHint().height() + 60
+        self.resize(min(760, screen.width() - 40), min(wanted, int(screen.height() * 0.85)))
 
         self.btn_login.clicked.connect(self._login)
         self.loginResult.connect(self._show_login)

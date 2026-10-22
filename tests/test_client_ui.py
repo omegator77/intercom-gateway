@@ -247,3 +247,20 @@ def test_settings_for_a_first_start_need_server_and_user(app, tmp_path):
     assert d.table.rowCount() == 0
     d._accept()
     assert d.result_data is None and "Server" in d.error.text()
+
+
+def test_settings_dialog_never_grows_beyond_the_screen_and_keeps_its_buttons_reachable(app, tmp_path):
+    from PySide6.QtWidgets import QApplication, QDialogButtonBox, QScrollArea
+
+    d = dialog(tmp_path)
+    screen = QApplication.primaryScreen().availableGeometry()
+    assert d.height() <= screen.height() and d.width() <= screen.width()
+    scroll = d.findChild(QScrollArea)
+    buttons = d.findChild(QDialogButtonBox)
+    assert scroll is not None and not scroll.isAncestorOf(buttons)  # the buttons are outside the scrolling part
+
+    # many lines make the content taller still: the dialog stays within the screen, the content scrolls
+    for i in range(30):
+        d._add_row(f"Leitung {i}", "9", str(i), None, None)
+    d2 = dialog(tmp_path)
+    assert d2.height() <= screen.height()
