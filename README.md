@@ -39,7 +39,12 @@ intercom-client            # Oberfläche; beim ersten Start öffnen sich die Ein
 - „Trennen“ oben beendet alles; auf jeder Leitungskarte gibt es zusätzlich „Trennen“/„Verbinden“ nur für diese Leitung.
 - Einstellungen: Server und Konto, Leitungen hinzufügen (nach dem Login aus der Liste), pro Leitung Sprechen- und
   Dauer-Taste, Mikrofon und Kopfhörer, Taste für „Alles stumm". Beispiel: `client.example.toml`.
-- Die Reihenfolge der Leitungen ist die Tastennummer für Companion/Stream Deck (noch nicht angebunden).
+- **Stream Deck über Bitfocus Companion** (Einstellungen → Stream Deck): Der Client spricht dasselbe Protokoll wie die
+  Web-App mit dem Companion-Modul „Eyevinn: Open Intercom" (WebSocket, Standard-Port 12345). Dieselben Tasten und
+  Rückmeldungen funktionieren: Sprechen (halten), Mikrofon stumm/an, Ausgang stumm, Lautstärke ±5 %, „Alles stumm"
+  und die Anzeige „spricht gerade". Die Nummer der Taste ist die Position der Leitung in der Liste (1 = erste Karte).
+  Das Modul nimmt nur **einen** Client an: entweder die Web-App oder dieser Client. Wird die Verbindung getrennt,
+  während eine Sprechtaste gehalten wird, lässt der Client sie los.
 - Die anderen sehen dich unter dem Namen deines Kontos (Alias in den User Settings der Web-App).
 - **Mikrofon-Aufbereitung** (Einstellungen → Mikrofon-Aufbereitung): Echo-Unterdrückung, Rauschunterdrückung (4 Stufen)
   und automatische Pegelregelung, mit den Voreinstellungen „Headset" (alles aus, beste Qualität) und „Lautsprecher"

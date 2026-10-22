@@ -227,6 +227,19 @@ class ClientSettingsDialog(QDialog):
         self.mute_all_key = KeyEdit(hotkeys.get("global_mute"))
         fk.addRow("Alles stumm", self.mute_all_key)
 
+        # -- Stream Deck
+        box_deck = QGroupBox("Stream Deck (Bitfocus Companion)")
+        fs = QFormLayout(box_deck)
+        self.companion = QLineEdit((raw.get("companion") or {}).get("url", ""))
+        self.companion.setPlaceholderText("ws://127.0.0.1:12345   (leer = aus)")
+        fs.addRow("Adresse des Moduls", self.companion)
+        deck_note = QLabel("Das Companion-Modul „Eyevinn: Open Intercom“ nimmt nur einen Client an: entweder die "
+                           "Web-App oder dieser Client. Die Tasten gelten für die Leitungen in der Reihenfolge der "
+                           "Liste oben (1 = erste Leitung).")
+        deck_note.setWordWrap(True)
+        muted(deck_note)
+        fs.addRow("", deck_note)
+
         self.error = QLabel()
         self.error.setStyleSheet("color:#d0472f;")
         self.error.setWordWrap(True)
@@ -240,7 +253,7 @@ class ClientSettingsDialog(QDialog):
         # the screen, and the buttons must never be out of reach.
         content = QWidget()
         lay = QVBoxLayout(content)
-        for w in (box_srv, box_lines, box_audio, box_proc, box_dim, box_keys):
+        for w in (box_srv, box_lines, box_audio, box_proc, box_dim, box_keys, box_deck):
             lay.addWidget(w)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -444,6 +457,13 @@ class ClientSettingsDialog(QDialog):
             data["dim"] = dim
         else:
             data.pop("dim", None)
+        url_text = self.companion.text().strip()
+        if url_text and "://" not in url_text:
+            url_text = "ws://" + url_text  # "127.0.0.1:12345" is enough
+        if url_text:
+            data["companion"] = {"url": url_text}
+        else:
+            data.pop("companion", None)
         # the real check: the same parser the client uses (also catches one key used twice)
         password = self.pw.text() or self._password() or "unchecked"
         try:

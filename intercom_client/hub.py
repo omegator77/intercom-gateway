@@ -151,6 +151,13 @@ class AudioHub:
     def dimmed(self) -> bool:
         return self._dimmer.dimmed
 
+    def line_speaking(self, name: str) -> bool:
+        """Is somebody speaking to me on this line right now? (never the programme line, like the web app)"""
+        for line in self._lines:
+            if line.control.name == name:
+                return not line.control.program and line.raw_level.rms > SPEECH_LEVEL
+        return False
+
     @property
     def processing(self) -> str:
         """'off', 'on' or the reason the configured processing could not start."""

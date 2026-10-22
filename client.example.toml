@@ -23,6 +23,9 @@ playout_ms = 60
 # while_speaking = true      # wenn du in einer anderen Leitung sprichst
 # delay_ms = 1000            # so lange muss gesprochen werden / so lange bleibt das Dimmen
 
+[companion]                  # Stream Deck über Bitfocus Companion (Modul "Eyevinn: Open Intercom")
+# url = "ws://127.0.0.1:12345"
+
 [hotkeys]
 global_mute = "ctrl+alt+m"   # Mikrofon in allen Leitungen aus/an
 

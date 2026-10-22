@@ -28,6 +28,21 @@ LATCH_OFF = "border-radius:6px; padding:10px 14px;"
 MUTE_ON = "background:#7a7f87; color:white; border-radius:6px; padding:10px 14px;"
 
 # the gateway's wording, except that a line which is switched off is "Getrennt" (not "Aus")
+COMPANION_TEXT = {
+    "connecting": "Companion verbindet …",
+    "connected": "Companion verbunden",
+    "busy": "Companion: dort ist schon ein anderer Client verbunden (Web-App?)",
+}
+
+
+def companion_text(status: str) -> str:
+    if status == "off":
+        return ""
+    if status.startswith("error"):
+        return "Companion nicht erreichbar"
+    return COMPANION_TEXT.get(status, "")
+
+
 STATES = {**STATE_TEXT, "off": ("Getrennt", "#7a7f87"), "idle": ("Bereit", "#7a7f87")}
 
 
@@ -344,7 +359,8 @@ class MainWindow(QMainWindow):
         proc = s["processing"]
         self.status.setText(f"{eng.cfg.username} @ {eng.cfg.server_url}"
                             + ("" if hk in ("ok", "off") else f"  ·  Globale Tasten nicht verfügbar: {hk}")
-                            + ("  ·  Echo-/Rauschunterdrückung an" if proc == "on" else ""))
+                            + ("  ·  Echo-/Rauschunterdrückung an" if proc == "on" else "")
+                            + (f"  ·  {companion_text(s['companion'])}" if companion_text(s["companion"]) else ""))
         self._warn(proc if proc not in ("on", "off") else (self.engine.error or ""))
         for line in s["lines"]:
             card = self.cards.get(line["name"])

@@ -377,3 +377,37 @@ def test_settings_save_and_reload_the_dimming_and_processing_values(app, tmp_pat
     again.pw.setText("x")
     again._accept()
     assert "dim" not in again.result_data and "echo_cancellation" not in again.result_data["audio"]
+
+
+# ---------------------------------------------------------------- Stream Deck / Companion
+
+def test_settings_save_the_companion_address_and_complete_a_bare_host_and_port(app, tmp_path):
+    d = dialog(tmp_path)
+    assert d.companion.text() == ""
+    d.pw.setText("x")
+    d._accept()
+    assert "companion" not in d.result_data  # off: nothing in the file
+
+    d = dialog(tmp_path)
+    d.pw.setText("x")
+    d.companion.setText("192.168.1.20:12345")
+    d._accept()
+    assert d.result_data["companion"] == {"url": "ws://192.168.1.20:12345"}
+    tomlio.save(tmp_path / "client.toml", d.result_data)
+    assert dialog(tmp_path, with_cfg=False).companion.text() == "ws://192.168.1.20:12345"
+
+    d = dialog(tmp_path)
+    d.pw.setText("x")
+    d.companion.setText("http://x:1")
+    d._accept()
+    assert d.result_data is None and "ws://" in d.error.text()
+
+
+def test_the_window_tells_how_the_companion_link_is_doing():
+    from intercom_client.ui.window import companion_text
+
+    assert companion_text("off") == ""
+    assert companion_text("connected") == "Companion verbunden"
+    assert "schon ein anderer Client" in companion_text("busy")
+    assert companion_text("error: ConnectionRefusedError: x") == "Companion nicht erreichbar"
+    assert companion_text("connecting").startswith("Companion verbindet")

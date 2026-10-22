@@ -17,6 +17,7 @@ from gateway.config import AudioCfg, LineCfg, ServerCfg
 from gateway.http import create_client
 from gateway.session import LineWorker
 
+from .companion import CompanionLink
 from .config import ClientCfg, ClientLine
 from .hotkeys import HotkeyError, HotkeyListener
 from .hub import AudioHub, LineControl, SharedLineAudio, make_hub
@@ -46,6 +47,7 @@ class ClientEngine:
         self.line_enabled: dict[str, bool] = {l.name: True for l in cfg.lines}  # connected (or connecting) by choice
         self._tasks: dict[str, asyncio.Task] = {}
         self._closing = False  # shutting down: no new line worker may be started any more
+        self._companion: CompanionLink | None = None
         self._locks: dict[str, asyncio.Lock] = {}
         self._factory = None
         self._http = None
@@ -115,8 +117,15 @@ class ClientEngine:
             self._start_hotkeys()
             self._notify()
             sync = asyncio.ensure_future(self._sync_program_flags())
+            companion = None
+            if self.cfg.companion_url:
+                self._companion = CompanionLink(self, self.cfg.companion_url)
+                companion = asyncio.ensure_future(self._companion.run())
             await self._stop.wait()
             sync.cancel()
+            if companion:
+                companion.cancel()
+                await asyncio.gather(companion, return_exceptions=True)
         finally:
             self._closing = True
             self._stop_hotkeys()
@@ -249,6 +258,11 @@ class ClientEngine:
             talk.release()
         self._notify()
 
+    def stop_talking(self, name: str) -> None:
+        """The microphone of this line is off, whether it was held or latched."""
+        self.controls[name].talk.stop_all()
+        self._notify()
+
     def toggle_latch(self, name: str) -> None:
         self.controls[name].talk.toggle_latch()
         self._notify()
@@ -304,6 +318,7 @@ class ClientEngine:
                 "last_error": s.get("last_error"),
                 "participants": s.get("participants"),
                 "program": c.program,
+                "speaking": bool(enabled and self.hub and self.hub.line_speaking(name)),
                 "dimmed": bool(c.program and self.hub and self.hub.dimmed),
                 "talking": c.talk.transmitting and not self.global_mute,
                 "held": c.talk.held,
@@ -320,6 +335,7 @@ class ClientEngine:
             "running": self.running,
             "error": self.error,
             "global_mute": self.global_mute,
+            "companion": self._companion.status if self._companion else "off",
             "dimmed": bool(self.hub and self.hub.dimmed),
             "dim_db": self.cfg.dim.amount_db,
             "processing": self.hub.processing if self.hub else "off",
