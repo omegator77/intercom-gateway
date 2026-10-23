@@ -7,9 +7,9 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QKeySequence  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 import intercom_client.engine as engine_mod  # noqa: E402
 from gateway import tomlio  # noqa: E402
@@ -21,6 +21,21 @@ from intercom_client.ui.window import MainWindow, key_hint  # noqa: E402
 @pytest.fixture(scope="module")
 def app():
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def _delete_widgets_after_each_test():
+    """Windows and dialogs a test left behind would be torn down in a random order when the interpreter exits, which
+    crashed the test process at the very end (the packaged app itself exits cleanly)."""
+    yield
+    app = QApplication.instance()
+    if app is None:
+        return
+    for widget in QApplication.topLevelWidgets():
+        widget.close()
+        widget.deleteLater()
+    app.processEvents()
+    app.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def pump(app, seconds=0.0, until=None, timeout=10.0):
@@ -840,5 +855,63 @@ def test_the_window_has_room_for_a_whole_row_without_scrolling_sideways(app, tmp
         card = win.cards["Regie"]
         assert card.sizeHint().width() <= win.scroll.viewport().width()  # a row fits at the smallest window width
         assert win.minimumWidth() >= 1000
+    finally:
+        win.close()
+
+
+# ---------------------------------------------------------------- opening the settings from the window
+
+def test_opening_the_settings_saves_remembers_the_password_connects_and_drops_the_dialog(app, tmp_path, monkeypatch):
+    import shiboken6
+
+    import intercom_client.ui.window as window_mod
+
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    stored, made = [], []
+
+    class Accepting(ClientSettingsDialog):
+        def exec(self):
+            made.append(self)
+            self.pw.setText("secret")
+            self.dim_amount.setValue(-20)
+            self._accept()
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(window_mod, "ClientSettingsDialog", Accepting)
+    monkeypatch.setattr(window_mod.credentials, "set_password", lambda url, user, pw: stored.append((url, user, pw)))
+    win = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)
+    try:
+        win.open_settings()
+        assert stored == [("https://intercom.example", "anna", "secret")]
+        assert tomlio.load_raw(cfg)["dim"] == {"amount_db": -20}
+        assert pump(app, until=lambda: win.engine is not None and win.cards["Regie"].pill.text() == "Verbunden")
+        pump(app, 0.2)
+        app.sendPostedEvents(None, QEvent.DeferredDelete)  # what the running event loop does
+        assert not shiboken6.isValid(made[0])  # the closed dialog was deleted, not kept as a child of the window
+    finally:
+        win.close()
+
+
+def test_cancelling_the_settings_changes_nothing(app, tmp_path, monkeypatch):
+    import intercom_client.ui.window as window_mod
+
+    cfg = tmp_path / "client.toml"
+    write_cfg(cfg)
+    before = cfg.read_text(encoding="utf-8")
+
+    class Cancelling(ClientSettingsDialog):
+        def exec(self):
+            self.pw.setText("secret")
+            self.dim_amount.setValue(-20)
+            return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(window_mod, "ClientSettingsDialog", Cancelling)
+    monkeypatch.setattr(window_mod.credentials, "set_password",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("must not store a password")))
+    win = MainWindow(tmp_path, cfg, enable_hotkeys=False, autostart=False)
+    try:
+        win.open_settings()
+        assert cfg.read_text(encoding="utf-8") == before and win.engine is None
     finally:
         win.close()

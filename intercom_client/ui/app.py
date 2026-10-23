@@ -22,8 +22,11 @@ def main(argv: list[str] | None = None) -> int:
     a, qt_args = ap.parse_known_args(argv)
     home = state_dir(a.state_dir)
     home.mkdir(parents=True, exist_ok=True)
+    handlers: list[logging.Handler] = [logging.FileHandler(default_log(home), encoding="utf-8")]
+    if sys.stderr is not None:  # the packaged window app has no console at all
+        handlers.append(logging.StreamHandler())
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-                        handlers=[logging.FileHandler(default_log(home), encoding="utf-8"), logging.StreamHandler()])
+                        handlers=handlers)
     app = QApplication([sys.argv[0], *qt_args])
     app.setApplicationName("Intercom-Client")
     config = Path(a.config) if a.config else default_config(home)

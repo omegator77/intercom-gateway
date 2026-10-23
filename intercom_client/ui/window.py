@@ -627,15 +627,16 @@ class MainWindow(QMainWindow):
 
     def open_settings(self) -> None:
         dlg = ClientSettingsDialog(self.config_path, self)
-        if dlg.exec() != ClientSettingsDialog.Accepted or dlg.result_data is None:
+        accepted = dlg.exec() == ClientSettingsDialog.Accepted
+        data, new_password = dlg.result_data, dlg.new_password
+        dlg.deleteLater()  # a closed dialog is not kept around until the program ends
+        if not accepted or data is None:
             return
         try:
-            tomlio.save(self.config_path, dlg.result_data)
-            if dlg.new_password:
-                url = dlg.result_data["server"]["url"]
-                user = dlg.result_data["server"]["username"]
+            tomlio.save(self.config_path, data)
+            if new_password:
                 try:
-                    credentials.set_password(url, user, dlg.new_password)
+                    credentials.set_password(data["server"]["url"], data["server"]["username"], new_password)
                 except Exception as e:
                     QMessageBox.warning(self, "Passwort", f"Das Passwort konnte nicht gespeichert werden:\n{e}")
         except OSError as e:
