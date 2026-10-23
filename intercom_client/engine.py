@@ -471,6 +471,8 @@ class ClientEngine:
             "dim_db": self.cfg.dim.amount_db,
             "processing": self.hub.processing if self.hub else "off",
             "mic_dbfs": self.hub.mic_level.dbfs if self.hub else -120.0,
+            "mic_raw_dbfs": self.hub.mic_raw_level.dbfs if self.hub else -120.0,
+            "mic_proc_dbfs": self.hub.proc_level.dbfs if self.hub else -120.0,
             "out_dbfs": self.hub.out_level.dbfs if self.hub else -120.0,
             "hotkeys": self.hotkey_status,
             "global_mute_key": self.cfg.global_mute_key,

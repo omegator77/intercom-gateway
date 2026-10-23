@@ -117,7 +117,9 @@ class AudioHub:
     def __init__(self, cfg: ClientAudio):
         self.cfg = cfg
         self.global_mute = False  # nobody is transmitting, whatever the lines say
-        self.mic_level = Level()
+        self.mic_level = Level()  # what is sent (after everything)
+        self.mic_raw_level = Level()  # the microphone after the level slider, before echo / noise processing
+        self.proc_level = Level()  # after echo / noise processing, before the leveller
         self.out_level = Level()
         self._dimmer = Dimmer(ClientDim(amount_db=0))  # off until the engine sets the configured values
         self.processing_error: str | None = None  # why the configured echo/noise processing is not running
@@ -221,8 +223,10 @@ class AudioHub:
     def process_mic(self, block: np.ndarray) -> None:
         """One block from the microphone: to every line that is being talked into, silence to the others."""
         mic = soft_limit(block * self._mic_gain) if self._mic_gain != 1.0 else block
+        self.mic_raw_level.update(mic)
         if self._proc is not None:
             mic = self._proc.process(mic)
+        self.proc_level.update(mic)
         if self._agc is not None:
             mic = self._agc.process(mic)  # after echo/noise processing: it levels the cleaned speech
         self.mic_level.update(mic)
@@ -263,6 +267,16 @@ class AudioHub:
         raise NotImplementedError
 
 
+def _default_index(sd, apis: list[dict], kind: str) -> int | None:
+    """The device "system default" means: the one Windows itself uses (the same list the settings dialog shows), not
+    whatever PortAudio's own default host API happens to pick."""
+    key, pos = ("default_input_device", 0) if kind == "input" else ("default_output_device", 1)
+    for api in apis:
+        if api["name"] == "Windows WASAPI" and api.get(key) is not None and api[key] >= 0:
+            return api[key]
+    return sd.default.device[pos]
+
+
 def _extra_settings(sd, device: dict, hostapis: list[dict]):
     """WASAPI shared mode only runs at the device's own rate unless auto-convert is on; the client works at 48 kHz."""
     if hostapis[device["hostapi"]]["name"] == "Windows WASAPI" and hasattr(sd, "WasapiSettings"):
@@ -286,9 +300,9 @@ class PortAudioHub(AudioHub):
         cfg = self.cfg
         try:
             in_idx = (match_device(devices, apis, cfg.input_device, "input") if cfg.input_device
-                      else sd.default.device[0])
+                      else _default_index(sd, apis, "input"))
             out_idx = (match_device(devices, apis, cfg.output_device, "output") if cfg.output_device
-                       else sd.default.device[1])
+                       else _default_index(sd, apis, "output"))
         except DeviceError:
             raise
         if in_idx is None or in_idx < 0:

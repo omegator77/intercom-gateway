@@ -17,6 +17,7 @@ from gateway.ui.window import STATE_TEXT, Meter, db_text, fmt_duration, people_h
 from ..config import ClientCfg, ConfigError, load_client_config
 from ..engine import ClientEngine
 from ..hub import make_hub
+from . import wheel
 from .settings import NOISE_LEVELS, ClientSettingsDialog
 
 log = logging.getLogger("client.ui")
@@ -318,6 +319,7 @@ class MainWindow(QMainWindow):
     def __init__(self, home: Path, config_path: Path, *, enable_hotkeys: bool = True, autostart: bool = True,
                  hub_factory=make_hub) -> None:
         super().__init__()
+        wheel.install()  # the wheel scrolls the line list; it must not turn a volume slider under the pointer
         self.home, self.config_path = home, config_path
         self._enable_hotkeys = enable_hotkeys
         self._hub_factory = hub_factory
@@ -384,6 +386,11 @@ class MainWindow(QMainWindow):
         mic.addWidget(self.echo_box)
         mic.addWidget(self.noise_box)
         mic.addWidget(self.agc_box)
+        self.proc_text = QLabel()
+        muted(self.proc_text)
+        self.proc_text.setToolTip("Pegel des Mikrofons vor und nach der Echo-/Rauschunterdrückung: der Unterschied in den "
+                                  "Sprechpausen ist das, was weggefiltert wird.")
+        mic.addWidget(self.proc_text)
         mic.addStretch(1)
         root.addLayout(mic)
         root.addWidget(self.status)
@@ -607,6 +614,11 @@ class MainWindow(QMainWindow):
             self._save_timer.start(700)
         self.mic_meter.set_db(s["mic_dbfs"])
         self.out_meter.set_db(s["out_dbfs"])
+        if s["processing"] == "on" and (s["echo"] or s["noise"]):
+            raw, proc = s["mic_raw_dbfs"], s["mic_proc_dbfs"]
+            self.proc_text.setText(f"Filter: {raw:.0f} → {proc:.0f} dBFS ({proc - raw:+.0f} dB)" if raw > -100 else "")
+        else:
+            self.proc_text.setText("")
         self.btn_mute_all.setChecked(s["global_mute"])
         self.btn_mute_all.setStyleSheet(MUTE_ON if s["global_mute"] else "")
         hk = s["hotkeys"]

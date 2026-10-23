@@ -18,6 +18,8 @@ from gateway import credentials, tomlio
 from gateway.auth import LoginError
 from gateway.lines import AvailableLine, LinesError, fetch_available_lines
 from gateway.ui import devices
+
+from . import wheel
 from gateway.ui.style import muted
 
 from ..config import ClientDim, ConfigError, parse_client_config
@@ -55,10 +57,10 @@ class KeyEdit(QKeySequenceEdit):
 
 
 class DeviceCombo(QComboBox):
-    def __init__(self, names: list[tuple[str, int]], current: str | None) -> None:
+    def __init__(self, names: list[tuple[str, int]], current: str | None, default_name: str | None = None) -> None:
         super().__init__()
         self.setMinimumWidth(220)
-        self.addItem(SYSTEM_DEFAULT, "")
+        self.addItem(f"{SYSTEM_DEFAULT} ({default_name})" if default_name else SYSTEM_DEFAULT, "")
         for name, ch in names:
             self.addItem(f"{name}  ({ch} Kanäle)", name)
         if current and self.findData(current) < 0:  # configured device not present right now: keep it visible
@@ -75,6 +77,7 @@ class ClientSettingsDialog(QDialog):
 
     def __init__(self, config_path: Path, parent=None, *, device_lists=None) -> None:
         super().__init__(parent)
+        wheel.install()  # scrolling the dialog must not change a device or a number by accident
         self.setWindowTitle("Einstellungen")
         self.config_path = config_path
         self._raw = tomlio.load_raw(config_path) if config_path.exists() else {}
@@ -157,8 +160,9 @@ class ClientSettingsDialog(QDialog):
         # -- audio
         box_audio = QGroupBox("Audio")
         fa = QFormLayout(box_audio)
-        self.mic = DeviceCombo(inputs, audio.get("input_device"))
-        self.speaker = DeviceCombo(outputs, audio.get("output_device"))
+        default_in, default_out = devices.default_names() if device_lists is None else (None, None)
+        self.mic = DeviceCombo(inputs, audio.get("input_device"), default_in)
+        self.speaker = DeviceCombo(outputs, audio.get("output_device"), default_out)
         self.mic_gain = QDoubleSpinBox()
         self.mic_gain.setRange(-40, 40)
         self.mic_gain.setSingleStep(1.0)
