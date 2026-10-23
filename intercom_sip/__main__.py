@@ -44,14 +44,14 @@ async def cmd_check(cfg: SipConfig) -> int:
     ua = SipEndpoint(0, cfg.sip.user, cfg.sip.display_name, cfg.sip.local_ip, cfg.sip.bind_ip)
     await ua.start()
     try:
-        if cfg.sip.register:
-            reg = Registration(ua, cfg.sip.register)
+        for name, acc in cfg.accounts.items():
+            reg = Registration(ua, acc)
             try:
                 await reg.register(60)
                 await reg.register(0)
-                print(f"\nregistration: {reg.address} at {cfg.sip.register.registrar} OK (registered and removed again)")
+                print(f"{chr(10)}account {name!r}: {reg.address} at {acc.registrar} OK (registered and removed again)")
             except (SipError, OSError) as e:
-                print(f"\nregistration: {reg.address} at {cfg.sip.register.registrar} ERROR {e}")
+                print(f"{chr(10)}account {name!r}: {reg.address} at {acc.registrar} ERROR {e}")
                 ok = False
         for call in cfg.calls:
             f = call.fmt
@@ -115,9 +115,8 @@ async def cmd_run(cfg: SipConfig, status_every: float, seconds: float | None) ->
     async def report():
         while True:
             await asyncio.sleep(status_every)
-            reg = service.status()["registration"]
-            if reg:
-                log.info("registration %s: %s%s", reg["address"], reg["state"],
+            for reg in service.status()["registrations"]:
+                log.info("account %s (%s): %s%s", reg["account"], reg["address"], reg["state"],
                          f" ({reg['last_error']})" if reg["last_error"] else "")
             for s in service.status()["calls"]:
                 m = s["media"] or {}

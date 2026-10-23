@@ -17,6 +17,7 @@ from gateway.session import LineWorker
 
 from .codecs import AudioFormat
 from .config import CallCfg, SipCfg, SipConfig
+from .registration import RegisterCfg
 from .lines import LineBinding, SipLineAudio
 from .media import CallMedia
 from .registration import Registration
@@ -41,8 +42,9 @@ class CallState(str, Enum):
 class CallRunner:
     def __init__(self, cfg: CallCfg, ua: SipEndpoint, sip: SipCfg, server: ServerCfg, audio: AudioCfg,
                  lines: dict[str, LineCfg], http: httpx.AsyncClient, auths: dict[str, AuthClient],
-                 debug: DebugCfg = DebugCfg()):
+                 debug: DebugCfg = DebugCfg(), account: RegisterCfg | None = None):
         self.cfg = cfg
+        self.account = account
         self._ua, self._sip, self._server, self._audio, self._http, self._debug = ua, sip, server, audio, http, debug
         self._line_cfgs = {n: lines[n] for n in cfg.line_names}
         self._auths = auths
@@ -51,7 +53,7 @@ class CallRunner:
         receives = {c.receive for c in cfg.channels if c.receive}
         self.bindings = {n: LineBinding(n, n in sends, n in receives, cfg.in_gain_db, cfg.out_gain_db)
                          for n in self._line_cfgs}
-        self.registration_domain: str | None = None  # set by the service when a registration is configured
+        self.registration_domain: str | None = None  # "@domain" of the account's address (set by the service)
         self.workers: dict[str, LineWorker] = {}
         self._worker_tasks: dict[str, asyncio.Task] = {}
         self.state = CallState.IDLE
@@ -131,9 +133,8 @@ class CallRunner:
         target = cfg.target
         assert target is not None
         uri = parse_uri(target)
-        reg = self._sip.register
-        # a target in the registrar's domain is reached through the registrar; anything else (an IP) directly
-        proxy = reg.registrar if reg is not None and uri.host in (reg.domain, parse_uri(reg.registrar).host) else None
+        acc = self.account
+        proxy = acc.registrar if acc is not None else None  # a call of an account goes through its registrar
         hop = parse_uri(proxy) if proxy else uri
         addr = await self._ua.resolve(hop.host, hop.port)
         ip = self._sip.local_ip or self._ua.local_ip_for(addr)
@@ -148,13 +149,13 @@ class CallRunner:
                 self.state = CallState.RINGING
 
         auth = (cfg.auth_user, cfg.auth_password) if cfg.auth_user else None
-        domain = None
-        if reg is not None:  # we are logged in at a registrar: our identity is user@domain
-            domain = self.registration_domain
-            if proxy and auth is None:  # ... and the same login is good for calls through it
-                auth = (reg.auth_user or reg.user, reg.password)
-        invite = asyncio.ensure_future(self._ua.invite(target, offer, auth=auth, progress=progress, domain=domain,
-                                                       proxy=proxy))
+        caller = domain = contact_user = None
+        if acc is not None:  # our identity is user@domain of the account, and its login is good for the call
+            caller, domain, contact_user = acc.user, self.registration_domain, acc.contact_user or acc.user
+            if auth is None:
+                auth = (acc.auth_user or acc.user, acc.password)
+        invite = asyncio.ensure_future(self._ua.invite(target, offer, auth=auth, progress=progress, caller=caller,
+                                                       domain=domain, proxy=proxy, contact_user=contact_user))
         stopped = asyncio.ensure_future(self._stop.wait())
         try:
             await asyncio.wait({invite, stopped}, return_when=asyncio.FIRST_COMPLETED)
@@ -353,13 +354,12 @@ class SipService:
         self.http = http
         self.ua = SipEndpoint(cfg.sip.sip_port, cfg.sip.user, cfg.sip.display_name, cfg.sip.local_ip, cfg.sip.bind_ip)
         auths = {n: AuthClient(http, l.username, l.password) for n, l in cfg.lines.items()}
-        self.runners = [CallRunner(c, self.ua, cfg.sip, cfg.server, cfg.audio, cfg.lines, http, auths, cfg.debug)
-                        for c in cfg.calls]
-        self.registration: Registration | None = None
-        if cfg.sip.register:
-            self.registration = Registration(self.ua, cfg.sip.register)
-            for r in self.runners:
-                r.registration_domain = self.registration.domain
+        self.registrations = {n: Registration(self.ua, a) for n, a in cfg.accounts.items()}
+        self.runners = [CallRunner(c, self.ua, cfg.sip, cfg.server, cfg.audio, cfg.lines, http, auths, cfg.debug,
+                                   cfg.accounts.get(c.account) if c.account else None) for c in cfg.calls]
+        for r in self.runners:
+            if r.cfg.account:
+                r.registration_domain = self.registrations[r.cfg.account].domain
         self._by_call_id: dict[str, CallRunner] = {}
         self.ua.on_invite = self._on_invite
         self.ua.on_accepted = self._on_accepted
@@ -374,11 +374,13 @@ class SipService:
         log.warning("refusing a call from %s: not in any accept_from list", call.remote_ip)
         return Reject(403, "Forbidden")
 
-    @staticmethod
-    async def _may_call(cfg: CallCfg, call: IncomingCall) -> bool:
-        if cfg.extension and call.to_user != cfg.extension:
-            return False
-        for entry in cfg.accept_from:
+    async def _may_call(self, cfg: CallCfg, call: IncomingCall) -> bool:
+        acc = cfg.account and self.cfg.accounts[cfg.account]
+        if acc:  # the call must be for this account: its contact name, or the number it is registered as
+            if call.ruri_user != (acc.contact_user or acc.user) and call.to_user != acc.user:
+                return False
+        entries = list(cfg.accept_from) + ([parse_uri(acc.registrar).host] if acc else [])
+        for entry in entries:
             if entry == call.remote_ip:
                 return True
             if not entry.replace(".", "").isdigit():  # a host name: whoever it resolves to right now
@@ -400,14 +402,16 @@ class SipService:
 
     async def run(self) -> None:
         tasks = [r.run() for r in self.runners]
-        reg = asyncio.ensure_future(self.registration.run()) if self.registration else None
+        regs = [asyncio.ensure_future(r.run()) for r in self.registrations.values()]
         try:
             await asyncio.gather(*tasks)
         finally:
-            if reg is not None:
-                self.registration.stop()
-                await asyncio.wait({reg}, timeout=8)
-                reg.cancel()
+            for r in self.registrations.values():
+                r.stop()
+            if regs:
+                await asyncio.wait(regs, timeout=8)
+            for t in regs:
+                t.cancel()
 
     def stop(self) -> None:
         for r in self.runners:
@@ -417,6 +421,6 @@ class SipService:
         await self.ua.close()
 
     def status(self) -> dict:
-        reg = self.registration
         return {"sip_port": self.ua.port, "calls": [r.status() for r in self.runners],
-                "registration": {"address": reg.address, "state": reg.state, "last_error": reg.last_error} if reg else None}
+                "registrations": [{"account": n, "address": r.address, "state": r.state, "last_error": r.last_error}
+                                  for n, r in self.registrations.items()]}

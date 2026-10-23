@@ -124,10 +124,12 @@ intercom-sip run -c sip.toml
 - **Sicherheit:** Audio wird nur von der Adresse angenommen, die das SDP nennt (hinter NAT `rtp_latch = true`). Angerufen wird
   nur von `accept_from`. SIP ist unverschlüsselt (UDP); die Ports (SIP und der RTP-Bereich) gehören in eine Firewall mit
   Freigabe nur für die Gegenstellen.
-- **Registrierung (optional, `[sip.register]`):** Die Brücke meldet sich mit Benutzer und Passwort an einem SIP-Server an,
-  erneuert die Anmeldung rechtzeitig und meldet sich beim Beenden ab. Ziele in der Domain des Servers (`sip:200@sip.local`)
-  werden über ihn angerufen, Anrufe an `sip:<benutzer>@<domain>` nehmen Anruf-Profile mit `mode = "answer"` an (`accept_from`
-  darf auch ein Hostname sein, `extension` wählt die gerufene Nebenstelle).
+- **Konten (`[[account]]`) wie bei einem Hardware-Codec:** Die Brücke kann an **mehreren SIP-Servern gleichzeitig** mit je
+  eigenen Zugangsdaten angemeldet sein. Solange sie angemeldet ist, ist sie dort unter ihrer Nummer anrufbar und kann über den
+  Server anrufen. Ein Anruf-Profil wählt sein Konto mit `account = "..."`: ausgehend wählt es `target = "12345"` in der Domain
+  des Servers, ankommend nimmt es Anrufe an, die für dieses Konto eintreffen (nur vom Server des Kontos, weitere Adressen
+  über `accept_from`). Ohne Konto geht ein Anruf direkt an eine Adresse. Die Anmeldung wird rechtzeitig erneuert und beim
+  Beenden entfernt; `intercom-sip check` probiert jede Anmeldung aus.
 - **Bewusst nicht enthalten (Stand jetzt):** TCP/TLS/SRTP, RTCP, DTMF, Weiterleitung.
 
 **Geprüft:** Alles unter `tests/test_sip_*.py` (Codecs, RTP, SDP, SIP-Nachrichten, Anruf gegen sich selbst, Kanalzuordnung wie
@@ -148,6 +150,8 @@ cd dev\sipserver
 mkdir data; copy users.example.cfg data\users.cfg
 docker compose up -d --build
 ```
+
+Für Versuche mit mehreren Konten gibt es einen zweiten, unabhängigen Server (Realm `sip.other`, Benutzer in `data2\users.cfg`): `docker compose --profile second up -d` (SIP auf `127.0.0.1:5061`). Dafür dienen `dev/sip_multi_probe.py` und baresip-Clients.
 
 - Verwaltungsseite: <http://127.0.0.1:8099> (wer angemeldet ist, laufende Gespräche, Benutzer anlegen und löschen)
 - Kamailios eigene Befehlsseite: <http://127.0.0.1:18080/RPC>

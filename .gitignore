@@ -14,3 +14,4 @@ dev/.state/
 build/
 dist/
 dev/sipserver/data/
+dev/sipserver/data2/

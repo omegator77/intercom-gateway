@@ -26,6 +26,8 @@ class RegisterCfg:
     domain: str | None = None  # the "@domain" of the address; default: the registrar's host
     auth_user: str | None = None  # name for the digest login if it differs from `user`
     expires_s: int = 300
+    name: str = ""  # what the config calls this account
+    contact_user: str | None = None  # user part of the address we register (incoming calls name it); default: `user`
 
 
 class Registration:
@@ -39,6 +41,7 @@ class Registration:
         self._stop = asyncio.Event()
         self._uri = parse_uri(cfg.registrar)
         self.domain = cfg.domain or self._uri.host
+        self.contact_user = cfg.contact_user or cfg.user
         self._call_id: str | None = None
         self._tag = new_tag()
         self._cseq = 0
@@ -98,7 +101,7 @@ class Registration:
             msg.add("to", f"<{self.address}>")
             msg.add("call-id", self._call_id)
             msg.add("cseq", f"{self._cseq} REGISTER")
-            msg.add("contact", f"<sip:{self.cfg.user}@{ip}:{self.ua.port}>;expires={expires}")
+            msg.add("contact", f"<sip:{self.contact_user}@{ip}:{self.ua.port}>;expires={expires}")
             msg.add("expires", str(expires))
             msg.add("user-agent", USER_AGENT)
             if authorization:

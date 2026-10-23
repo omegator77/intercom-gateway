@@ -4,8 +4,8 @@ The `[server]` and `[[line]]` tables are the gateway's own (accounts, passwords,
 code; sound card settings do not exist here. A `[[call]]` ties one SIP call to up to two lines per direction."""
 from __future__ import annotations
 
-import dataclasses
 import os
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +29,6 @@ class SipCfg:
     rtp_port_max: int = 5100
     user: str = "intercom"  # user part of our SIP address (without a registration)
     display_name: str = "Open Intercom"
-    register: RegisterCfg | None = None  # optional: log in at a SIP registrar (see [sip.register])
 
 
 @dataclass(frozen=True)
@@ -45,8 +44,9 @@ class CallCfg:
     fmt: AudioFormat
     channels: tuple[ChannelCfg, ...]  # one per channel of the codec: left, right
     target: str | None = None
-    accept_from: tuple[str, ...] = ()  # IP addresses (or host names, looked up on every call) allowed to call us
-    extension: str | None = None  # answering: only calls to this called user (when several answering calls share a registrar)
+    account: str | None = None  # the SIP account (a [[account]]) this call uses: registered there, calls go through it
+    accept_from: tuple[str, ...] = ()  # IP addresses (or host names, looked up on every call) allowed to call us;
+    #                                    with an account, the account's registrar is allowed as well
     auth_user: str | None = None
     auth_password: str = ""
     redial: bool = True
@@ -73,6 +73,7 @@ class SipConfig:
     server: ServerCfg
     audio: AudioCfg
     sip: SipCfg
+    accounts: dict[str, RegisterCfg]
     lines: dict[str, LineCfg]
     calls: tuple[CallCfg, ...]
     debug: DebugCfg = DebugCfg()
@@ -128,29 +129,40 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
     )
     if sip.rtp_port_max < sip.rtp_port_min + 1:
         raise ConfigError("[sip] rtp_port_max must be above rtp_port_min")
-    reg_raw = sip_raw.get("register")
-    if reg_raw:
-        where = "[sip.register]"
+    accounts: dict[str, RegisterCfg] = {}
+    for raw in data.get("account", []):
+        name = str(raw.get("name", "")).strip()
+        if not name:
+            raise ConfigError("every [[account]] needs a name")
+        if name in accounts:
+            raise ConfigError(f"duplicate account name {name!r}")
+        if not raw.get("enabled", True):
+            continue
+        where = f"account {name!r}"
         for key in ("registrar", "user"):
-            if not reg_raw.get(key):
+            if not raw.get(key):
                 raise ConfigError(f"{where}: {key} is required")
         password = ""
-        if reg_raw.get("password_env"):
-            var = str(reg_raw["password_env"])
+        if raw.get("password_env"):
+            var = str(raw["password_env"])
             if not env.get(var):
                 raise ConfigError(f"{where}: environment variable {var} is not set")
             password = env[var]
-        elif reg_raw.get("password"):
-            password = str(reg_raw["password"])
+        elif raw.get("password"):
+            password = str(raw["password"])
         try:
-            parse_uri(str(reg_raw["registrar"]))
+            parse_uri(str(raw["registrar"]))
         except SipError as e:
             raise ConfigError(f"{where}: {e.reason}") from None
-        sip = dataclasses.replace(sip, user=str(reg_raw["user"]), register=RegisterCfg(
-            registrar=str(reg_raw["registrar"]), user=str(reg_raw["user"]), password=password,
-            domain=str(reg_raw["domain"]) if reg_raw.get("domain") else None,
-            auth_user=str(reg_raw["auth_user"]) if reg_raw.get("auth_user") else None,
-            expires_s=int(_num(reg_raw, "expires_s", 300, 60, 3600, where))))
+        accounts[name] = RegisterCfg(
+            registrar=str(raw["registrar"]), user=str(raw["user"]), password=password,
+            domain=str(raw["domain"]) if raw.get("domain") else None,
+            auth_user=str(raw["auth_user"]) if raw.get("auth_user") else None,
+            expires_s=int(_num(raw, "expires_s", 300, 60, 3600, where)), name=name,
+            contact_user=str(raw.get("contact_user") or re.sub(r"[^A-Za-z0-9_.-]", "-", name.lower())))
+    contacts = [a.contact_user for a in accounts.values()]
+    if len(set(contacts)) != len(contacts):
+        raise ConfigError("two accounts have the same contact_user - incoming calls could not be told apart")
 
     calls: list[CallCfg] = []
     names: set[str] = set()
@@ -169,6 +181,9 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
         if mode not in ("dial", "answer"):
             raise ConfigError(f"{where}: mode must be 'dial' or 'answer'")
         target = str(raw["target"]).strip() if raw.get("target") else None
+        account = str(raw["account"]) if raw.get("account") else None
+        if account and account not in accounts:
+            raise ConfigError(f"{where}: unknown account {account!r} (defined: {', '.join(accounts) or 'none'})")
         accept = raw.get("accept_from", [])
         if isinstance(accept, str):
             accept = [accept]
@@ -177,12 +192,14 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
         if mode == "dial":
             if not target:
                 raise ConfigError(f"{where}: target is required (e.g. \"sip:codec@192.0.2.10:5060\")")
+            if account and "@" not in target and not target.startswith("sip:"):
+                target = f"sip:{target}@{accounts[account].domain or parse_uri(accounts[account].registrar).host}"
             try:
                 parse_uri(target)
             except SipError as e:
                 raise ConfigError(f"{where}: {e.reason}") from None
-        elif not accept:
-            raise ConfigError(f"{where}: an answering call needs accept_from (the IP addresses allowed to call us)")
+        elif not accept and not account:
+            raise ConfigError(f"{where}: an answering call needs an account or accept_from (who may call us)")
 
         codec = str(raw.get("codec", "mp2")).lower()
         if codec not in CODECS:
@@ -233,7 +250,7 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
 
         calls.append(CallCfg(
             name=name, mode=mode, fmt=fmt, channels=chans, target=target, accept_from=tuple(accept),
-            extension=str(raw["extension"]) if raw.get("extension") else None,
+            account=account,
             auth_user=str(raw["auth_user"]) if raw.get("auth_user") else None, auth_password=password,
             redial=bool(raw.get("redial", True)), redial_s=_num(raw, "redial_s", 10.0, 1, 3600, where),
             rtp_timeout_s=_rtp_timeout(raw, where), keep_lines=bool(raw.get("keep_lines", False)),
@@ -242,7 +259,7 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
         ))
     if not calls:
         raise ConfigError("no enabled [[call]] configured")
-    return SipConfig(gw.server, gw.audio, sip, lines, tuple(calls), gw.debug)
+    return SipConfig(gw.server, gw.audio, sip, accounts, lines, tuple(calls), gw.debug)
 
 
 def load_sip_config(path: str | Path, env: Mapping[str, str] | None = None,

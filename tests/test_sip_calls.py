@@ -407,14 +407,29 @@ def test_registering_with_a_password_keeps_the_binding_and_removes_it_on_stop():
     asyncio.run(go("wrong"))
 
 
-def test_config_reads_the_registration_and_hostnames_in_accept_from():
+def test_config_reads_the_accounts_and_ties_calls_to_them():
     cfg = parse_sip_config({
-        "server": {"url": "http://x"}, "line": [line("L1", 1)],
-        "sip": {"register": {"registrar": "sip:kamailio:5060", "user": "bridge", "password": "pw", "domain": "sip.local"}},
-        "call": [{"name": "A", "mode": "answer", "accept_from": "kamailio", "extension": "bridge",
-                  "left": {"line": "L1"}}]}, lookup_password=PW)
-    assert cfg.sip.register.registrar == "sip:kamailio:5060" and cfg.sip.register.domain == "sip.local"
-    assert cfg.sip.user == "bridge" and cfg.calls[0].accept_from == ("kamailio",) and cfg.calls[0].extension == "bridge"
-    with pytest.raises(ConfigError, match="registrar is required"):
-        parse_sip_config({"server": {"url": "http://x"}, "line": [line("L1", 1)], "sip": {"register": {"user": "x"}},
-                          "call": [{"name": "A", "target": "sip:x@h", "left": {"line": "L1"}}]}, lookup_password=PW)
+        "server": {"url": "http://x"}, "line": [line("L1", 1), line("L2", 2)],
+        "account": [{"name": "ARD Sternpunkt", "registrar": "sip:sip.ard.example:5060", "user": "4711", "password": "pw",
+                     "domain": "ard.example"},
+                    {"name": "ZDF", "registrar": "sip:zdf.example", "user": "9001", "password": "pw2", "contact_user": "zdf-van"}],
+        "call": [{"name": "A", "mode": "answer", "account": "ARD Sternpunkt", "left": {"line": "L1"}},
+                 {"name": "B", "account": "ZDF", "target": "12345", "left": {"line": "L2"}}]}, lookup_password=PW)
+    ard, zdf = cfg.accounts["ARD Sternpunkt"], cfg.accounts["ZDF"]
+    assert (ard.registrar, ard.user, ard.domain, ard.contact_user) == ("sip:sip.ard.example:5060", "4711", "ard.example",
+                                                                         "ard-sternpunkt")
+    assert zdf.contact_user == "zdf-van" and zdf.domain is None
+    assert cfg.calls[0].account == "ARD Sternpunkt" and cfg.calls[0].accept_from == ()
+    assert cfg.calls[1].target == "sip:12345@zdf.example"  # a bare number is dialled in the account's domain
+    for change, message in (({"call": [{"name": "A", "account": "nope", "target": "1", "left": {"line": "L1"}}]},
+                             "unknown account"),
+                            ({"account": [{"name": "X", "user": "x"}]}, "registrar is required"),
+                            ({"account": [{"name": "X", "registrar": "sip:a", "user": "x"},
+                                          {"name": "X", "registrar": "sip:b", "user": "y"}]}, "duplicate account"),
+                            ({"account": [{"name": "X y", "registrar": "sip:a", "user": "x"},
+                                          {"name": "x-y", "registrar": "sip:b", "user": "y"}]}, "same contact_user")):
+        data = {"server": {"url": "http://x"}, "line": [line("L1", 1)],
+                "call": [{"name": "A", "target": "sip:x@h", "left": {"line": "L1"}}]}
+        data.update(change)
+        with pytest.raises(ConfigError, match=message):
+            parse_sip_config(data, lookup_password=PW)

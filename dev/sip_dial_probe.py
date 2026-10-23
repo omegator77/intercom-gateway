@@ -54,18 +54,20 @@ async def main(a) -> int:
             "l16": dict(codec="l16", channel_mode="stereo")}[a.codec]
     chans = {"left": {"line": "A"}} if spec["codec"] in ("g722", "pcmu", "pcma") else {"left": {"line": "A"}, "right": {"line": "B"}}
     sip = {"sip_port": a.sip_port, "local_ip": a.local_ip, "rtp_port_min": 41000, "rtp_port_max": 41040}
-    if a.registrar:
-        sip["register"] = {"registrar": a.registrar, "user": a.user, "password": a.password, "domain": a.domain,
-                           "expires_s": 60}
+    accounts = []
     call = {"name": "probe", "mode": "answer" if a.answer else "dial", "redial": False, "rtp_latch": True,
             **spec, **chans}
+    if a.registrar:
+        accounts = [{"name": "probe", "registrar": a.registrar, "user": a.user, "password": a.password,
+                     "domain": a.domain, "expires_s": 60}]
+        call["account"] = "probe"
     if a.answer:
-        call["accept_from"] = [a.accept_from]
-        call["extension"] = a.user
+        if not a.registrar:
+            call["accept_from"] = [a.accept_from]
     else:
         call["target"] = a.target
     cfg = parse_sip_config({
-        "server": {"url": "http://127.0.0.1:1"}, "sip": sip,
+        "server": {"url": "http://127.0.0.1:1"}, "sip": sip, "account": accounts,
         "line": [{"name": n, "production_id": "1", "line_id": "1", "username": n, "password": "x"} for n in ("A", "B")],
         "call": [call]})
     svc = SipService(cfg, None)

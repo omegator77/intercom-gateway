@@ -331,7 +331,8 @@ class IncomingCall:
     from_uri: str
     remote_ip: str
     sdp: str  # the caller's offer
-    to_user: str = ""  # the extension that was called (user part of the To header)
+    to_user: str = ""  # the number that was called (user part of the To header)
+    ruri_user: str = ""  # the user part of the address the request was sent to (what we registered as our Contact)
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
 
 
@@ -411,8 +412,8 @@ class SipEndpoint(asyncio.DatagramProtocol):
     def via(self, ip: str, branch: str) -> str:
         return f"SIP/2.0/UDP {ip}:{self.port};branch={branch};rport"
 
-    def contact(self, ip: str) -> str:
-        return f"<sip:{self.user}@{ip}:{self.port}>"
+    def contact(self, ip: str, user: str | None = None) -> str:
+        return f"<sip:{user or self.user}@{ip}:{self.port}>"
 
     @staticmethod
     async def resolve(host: str, port: int) -> tuple[str, int]:
@@ -528,7 +529,8 @@ class SipEndpoint(asyncio.DatagramProtocol):
 
     async def invite(self, target: str, sdp: str, *, auth: tuple[str, str] | None = None,
                      progress: Callable[[int, str], None] | None = None, ring_timeout: float = 90.0,
-                     caller: str | None = None, domain: str | None = None, proxy: str | None = None) -> Dialog:
+                     caller: str | None = None, domain: str | None = None, proxy: str | None = None,
+                     contact_user: str | None = None) -> Dialog:
         """Call `target`; returns the dialog once the call is established and acknowledged. With `proxy` the
         request goes to that server (an outbound proxy / registrar) while the Request-URI stays `target`."""
         uri = parse_uri(target)
@@ -549,7 +551,7 @@ class SipEndpoint(asyncio.DatagramProtocol):
             msg.add("to", f"<{uri}>")
             msg.add("call-id", call_id)
             msg.add("cseq", f"{cseq} INVITE")
-            msg.add("contact", self.contact(ip))
+            msg.add("contact", self.contact(ip, contact_user))
             msg.add("allow", ALLOW)
             msg.add("user-agent", USER_AGENT)
             if authorization:
@@ -687,7 +689,7 @@ class SipEndpoint(asyncio.DatagramProtocol):
         call_id = req.call_id
         offer = req.body.decode("utf-8", errors="replace")
         incoming = IncomingCall(call_id, req.get("from") or "", addr[0], offer,
-                                to_user=_user_of(req.get("to")))
+                                to_user=_user_of(req.get("to")), ruri_user=_user_of(req.uri))
         self._incoming[call_id] = incoming
         to_tag = new_tag()
         try:

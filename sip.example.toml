@@ -11,14 +11,18 @@ sip_port = 5060             # our SIP port (UDP). 0 = any free port
 rtp_port_min = 5004         # audio goes over UDP ports in this range (even ports; EBU Tech 3326 suggests 5004)
 rtp_port_max = 5100
 
-# Optional: log in at a SIP registrar (a PBX, Kamailio, ...). Calls to targets in its domain then go through it
-# (sip:200@sip.local), and others may call us at sip:<user>@<domain> (mode = "answer", accept_from = the registrar).
-# [sip.register]
-# registrar = "sip:192.0.2.1:5060"
-# user = "bridge"
-# domain = "sip.local"                  # default: the registrar's host
-# password_env = "SIP_PASSWORD"
-# expires_s = 300
+# Accounts: like a hardware codec, the bridge can be logged in at one or several SIP servers, each with its own
+# credentials. While registered it can be called there (at "user"), and its calls can go out through that server.
+# A call picks its account with  account = "name". Without an account a call goes straight to an address.
+# [[account]]
+# name = "ARD"
+# registrar = "sip:sip.ard.example:5060"
+# user = "4711"                         # the number / name this codec has on that server
+# domain = "ard.example"                # the part after the @ ; default: the registrar's host
+# password_env = "ARD_SIP_PASSWORD"
+# # auth_user = "..."                   # login name, if it differs from user
+# # expires_s = 300                     # how long a registration is asked for (it is renewed in time)
+# # contact_user = "ard"                # how this account is named in calls to us; default: the account name
 
 # Every line a call uses needs its OWN account (role participant in that production), like the gateway.
 # The account's alias / display name is what the people on the line see.
@@ -51,7 +55,8 @@ password_env = "SIP_N1_PASSWORD"
 [[call]]
 name = "SAW Mainz"
 mode = "dial"
-target = "sip:codec@192.0.2.10:5060"    # sip:user@host:port, or just host
+target = "sip:codec@192.0.2.10:5060"    # sip:user@host:port, or just host. With an account: just the number
+# account = "ARD"                       # call through this account (target "12345" = sip:12345@<its domain>)
 codec = "mp2"                           # mp2 (MPEG Layer II) | g722 | pcmu | pcma | l16
 bitrate_kbps = 192                      # Layer II: 32..384 (mono up to 192)
 sample_rate = 48000                     # Layer II: 32000 | 44100 | 48000
@@ -77,7 +82,8 @@ receive = "N-1"
 # [[call]]
 # name = "Studio Hamburg"
 # mode = "answer"
-# accept_from = ["198.51.100.20"]
+# account = "ARD"                       # answers calls that come in for this account (at its registrar) ...
+# accept_from = ["198.51.100.20"]       # ... or, without an account, calls from these addresses only
 # codec = "mp2"                         # used where the offer leaves details open (rate, bit rate of our own stream)
 # [call.left]
 # line = "Regie-HH"
