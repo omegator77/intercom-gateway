@@ -269,7 +269,7 @@ class CallRunner:
             try:
                 while not (closed.done() or stopped.done()):
                     await asyncio.wait({closed, stopped}, timeout=1.0, return_when=asyncio.FIRST_COMPLETED)
-                    if media.silent_for() > self.cfg.rtp_timeout_s:
+                    if self.cfg.rtp_timeout_s and media.silent_for() > self.cfg.rtp_timeout_s:
                         self.last_error = f"no audio from the other side for {self.cfg.rtp_timeout_s:.0f} s"
                         log.warning("[%s] %s - hanging up", self.cfg.name, self.last_error)
                         break

@@ -47,7 +47,7 @@ class CallCfg:
     auth_password: str = ""
     redial: bool = True
     redial_s: float = 10.0
-    rtp_timeout_s: float = 15.0  # nothing received for this long -> the call is considered dead
+    rtp_timeout_s: float = 0.0  # nothing received for this long -> hang up and call again; 0 = never (PTT lines stay quiet for minutes)
     keep_lines: bool = False  # keep the lines joined between calls (default: only while a call is up)
     rtp_latch: bool = False  # send to wherever the other side's RTP comes from (NAT), instead of what its SDP says
     playout_ms: int = 60  # jitter buffer for what arrives from the other side
@@ -81,6 +81,13 @@ def _num(raw: Mapping, key: str, default, lo: float, hi: float, where: str):
         raise ConfigError(f"{where}: {key} must be a number") from None
     if not lo <= v <= hi:
         raise ConfigError(f"{where}: {key} must be between {lo:g} and {hi:g}")
+    return v
+
+
+def _rtp_timeout(raw: Mapping, where: str) -> float:
+    v = _num(raw, "rtp_timeout_s", 0.0, 0, 3600, where)
+    if 0 < v < 3:
+        raise ConfigError(f"{where}: rtp_timeout_s must be 0 (off) or at least 3")
     return v
 
 
@@ -201,7 +208,7 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
             name=name, mode=mode, fmt=fmt, channels=chans, target=target, accept_from=tuple(accept),
             auth_user=str(raw["auth_user"]) if raw.get("auth_user") else None, auth_password=password,
             redial=bool(raw.get("redial", True)), redial_s=_num(raw, "redial_s", 10.0, 1, 3600, where),
-            rtp_timeout_s=_num(raw, "rtp_timeout_s", 15.0, 3, 600, where), keep_lines=bool(raw.get("keep_lines", False)),
+            rtp_timeout_s=_rtp_timeout(raw, where), keep_lines=bool(raw.get("keep_lines", False)),
             rtp_latch=bool(raw.get("rtp_latch", False)), playout_ms=int(_num(raw, "playout_ms", 60, 20, 500, where)),
             in_gain_db=_num(raw, "in_gain_db", 0.0, -40, 40, where), out_gain_db=_num(raw, "out_gain_db", 0.0, -40, 40, where),
         ))

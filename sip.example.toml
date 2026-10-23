@@ -51,7 +51,8 @@ channel_mode = "dual-mono"              # mono | stereo | dual-mono (two indepen
 # auth_password_env = "SAW_PASSWORD"
 # redial = true                         # call again when the call ends or never comes up
 # redial_s = 10
-# rtp_timeout_s = 15                    # no audio from the other side for this long -> hang up and redial
+# rtp_timeout_s = 0                     # 0 = off (default): command lines are PTT and stay quiet for minutes. Else: no packets
+#                                       # from the other side for this long -> hang up and redial
 # rtp_latch = false                     # true: behind NAT, send to wherever the other side's audio comes from
 # keep_lines = false                    # true: stay on the lines between calls (default: join when the call is up)
 # in_gain_db = 0.0                      # level from the call into the lines

@@ -117,7 +117,9 @@ intercom-sip run -c sip.toml
   und lineares 16 Bit. **Dual-mono** ist bei Layer II derselbe Strom wie Stereo mit anderem Kanalmodus im Frame-Kopf; den
   Kopf schreiben wir um (libav kann das nicht selbst). AAC (LD/ELD, HE) ist **noch nicht** enthalten: dafür fehlt der
   FDK-AAC-Encoder in den üblichen libav-Paketen.
-- **Der Anruf wird überwacht:** kommt `rtp_timeout_s` lang nichts von der Gegenstelle, wird aufgelegt und neu angerufen.
+- **Überwachung (standardmäßig aus):** Kommandoleitungen sind PTT und bleiben minutenlang still, mancher Codec sendet dann
+  gar keine Pakete. Deshalb wird nicht von selbst aufgelegt. Wer es will, setzt `rtp_timeout_s` (Sekunden ohne Pakete
+  von der Gegenstelle; dann wird aufgelegt und neu angerufen). Aufgelegt wird immer, wenn die Gegenstelle ein BYE sendet.
   Das Log zeigt bei jedem Anruf das SDP der Gegenstelle in einer Zeile, der erste Blick bei Problemen mit fremden Geräten.
 - **Sicherheit:** Audio wird nur von der Adresse angenommen, die das SDP nennt (hinter NAT `rtp_latch = true`). Angerufen wird
   nur von `accept_from`. SIP ist unverschlüsselt (UDP); die Ports (SIP und der RTP-Bereich) gehören in eine Firewall mit

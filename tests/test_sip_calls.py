@@ -195,6 +195,27 @@ def test_a_caller_that_is_not_on_the_list_is_refused_and_the_dialler_tries_again
     asyncio.run(go())
 
 
+def test_a_call_without_packets_from_the_other_side_stays_up_unless_a_timeout_is_set():
+    async def quiet():
+        me, saw = await start_pair()
+        run_me = asyncio.ensure_future(me.run())
+        run_saw = asyncio.ensure_future(saw.run())
+        mine, theirs = me.runners[0], saw.runners[0]
+        try:
+            assert await wait_for(lambda: mine.state == CallState.CONNECTED and theirs.state == CallState.CONNECTED)
+            theirs.media._tasks[0].cancel()  # the other side sends nothing any more (a PTT codec, or a crash)
+            await asyncio.sleep(4.5)
+            assert mine.state == CallState.CONNECTED and mine.calls_made == 1 and mine.media.silent_for() > 3
+        finally:
+            me.stop()
+            saw.stop()
+            await asyncio.wait_for(asyncio.gather(run_me, run_saw), 10)
+            await me.close()
+            await saw.close()
+
+    asyncio.run(quiet())
+
+
 def test_a_call_without_audio_from_the_other_side_is_hung_up_and_dialled_again():
     async def go():
         me, saw = await start_pair({"rtp_timeout_s": 3})
@@ -222,6 +243,13 @@ def base_cfg(**call):
     c = {"name": "A", "target": "sip:x@192.0.2.1", "left": {"line": "L1"}}
     c.update(call)
     return {"server": {"url": "http://x"}, "line": [line("L1", 1), line("L2", 2)], "call": [c]}
+
+
+def test_a_quiet_other_side_is_not_hung_up_on_by_default():
+    assert parse_sip_config(base_cfg(), lookup_password=PW).calls[0].rtp_timeout_s == 0
+    assert parse_sip_config(base_cfg(rtp_timeout_s=30), lookup_password=PW).calls[0].rtp_timeout_s == 30
+    with pytest.raises(ConfigError, match="0 .off. or at least 3"):
+        parse_sip_config(base_cfg(rtp_timeout_s=1), lookup_password=PW)
 
 
 def test_config_defaults_and_shorthand():
