@@ -77,14 +77,14 @@ intercom-client            # Oberfläche; beim ersten Start öffnen sich die Ein
 
 ```powershell
 pip install -e ".[client,dev,build]"
-.uild-client.ps1          # Tests -> PyInstaller -> Selbsttest des gebauten Programms -> Installer
+.\build-client.ps1          # Tests -> PyInstaller -> Selbsttest des gebauten Programms -> Installer
 ```
 
 Ergebnis: `dist\installer\intercom-client-<Version>-setup.exe`. Er installiert pro Benutzer ohne Administratorrechte
 (Desktop-Verknüpfung und „beim Anmelden öffnen“ sind wählbar); Einstellungen und Passwort bleiben beim Deinstallieren
 erhalten. Im Ordner liegen zwei Programme: `IntercomClient.exe` (das Fenster) und `intercom-client.exe` (dasselbe mit
 Konsole: `--version`, `--selftest` prüft, ob alle Bibliotheken im gebauten Programm geladen werden, und gibt bei
-Problemen Meldungen aus). Der Gateway hat seinen eigenen Installer (`.uild.ps1`), beide lassen sich nebeneinander
+Problemen Meldungen aus). Der Gateway hat seinen eigenen Installer (`.\build.ps1`), beide lassen sich nebeneinander
 installieren.
 
 ## Installation (Entwicklungsstand)
