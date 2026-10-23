@@ -2,4 +2,4 @@
 
 Built on the gateway's modules (login, WebRTC connection, reconnecting line worker); the audio side is
 one microphone and one output shared by all lines, see hub.py."""
-__version__ = "0.1.0"
+__version__ = "0.1.1"
