@@ -13,7 +13,7 @@ import asyncio
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -172,6 +172,21 @@ class AudioHub:
     def set_dim(self, dim: ClientDim) -> None:
         self._dimmer = Dimmer(dim)
 
+    def set_agc_params(self, target_dbfs: int, max_gain_db: int) -> None:
+        """New target level / maximum gain for the speech leveller (a running one starts afresh with them)."""
+        self.cfg = replace(self.cfg, agc_target_dbfs=target_dbfs, agc_max_gain_db=max_gain_db)
+        if self._agc is not None:
+            self._agc = SpeechLeveller(target_dbfs, float(max_gain_db))
+
+    def set_output_gain_db(self, db: float) -> None:
+        self.cfg = replace(self.cfg, output_gain_db=float(db))
+        self._out_gain = db_to_lin(float(db))
+
+    async def reopen(self, cfg: ClientAudio) -> None:
+        """Use other sound devices without touching the lines. Raises DeviceError and keeps the old ones when the
+        new ones cannot be opened."""
+        self.cfg = cfg
+
     @property
     def dimmed(self) -> bool:
         return self._dimmer.dimmed
@@ -315,14 +330,32 @@ class PortAudioHub(AudioHub):
             raise DeviceError(f"could not open the audio devices: {e}") from e
         log.info("microphone <- %s, output -> %s", din["name"], dout["name"])
 
+    async def reopen(self, cfg: ClientAudio) -> None:
+        """Open the new devices first, then let go of the old ones: the lines stay attached throughout, only the sound
+        has a short gap. If the new devices do not open, the old ones simply keep running."""
+        old_cfg, old = self.cfg, (self._in, self._out)
+        self.cfg = cfg
+        self._in = self._out = None
+        try:
+            await self.start()
+        except DeviceError:
+            self.cfg, (self._in, self._out) = old_cfg, old
+            raise
+        for s in old:
+            self._close_stream(s)
+
+    @staticmethod
+    def _close_stream(s) -> None:
+        if s is not None:
+            try:
+                s.stop()
+                s.close()
+            except Exception:
+                log.exception("closing an audio stream")
+
     async def stop(self) -> None:
         for s in (self._in, self._out):
-            if s is not None:
-                try:
-                    s.stop()
-                    s.close()
-                except Exception:
-                    log.exception("closing an audio stream")
+            self._close_stream(s)
         self._in = self._out = None
 
 

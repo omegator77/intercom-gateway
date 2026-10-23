@@ -9,6 +9,7 @@ import asyncio
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from typing import Callable
 
 from gateway.audio import DeviceError
@@ -23,6 +24,12 @@ from .hotkeys import HotkeyError, HotkeyListener
 from .hub import AudioHub, LineControl, SharedLineAudio, make_hub
 
 log = logging.getLogger("client.engine")
+
+
+@dataclass(frozen=True)
+class ApplyResult:
+    live: bool  # False: the server or the login changed - the caller has to connect again
+    reason: str | None = None  # live=False: why; live=True: a problem worth showing (the rest was applied)
 
 OPUS_KBPS = 64  # a voice line; the gateway's 96 is for programme sound
 
@@ -61,6 +68,7 @@ class ClientEngine:
         self._enable_hotkeys = enable_hotkeys
         self._hub_factory = hub_factory
         self._hotkeys: HotkeyListener | None = None
+        self._companion_task: asyncio.Task | None = None
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop: asyncio.Event | None = None
@@ -126,15 +134,10 @@ class ClientEngine:
             self._start_hotkeys()
             self._notify()
             sync = asyncio.ensure_future(self._sync_program_flags())
-            companion = None
-            if self.cfg.companion_url:
-                self._companion = CompanionLink(self, self.cfg.companion_url)
-                companion = asyncio.ensure_future(self._companion.run())
+            self._start_companion()
             await self._stop.wait()
             sync.cancel()
-            if companion:
-                companion.cancel()
-                await asyncio.gather(companion, return_exceptions=True)
+            await self._stop_companion()
         finally:
             self._closing = True
             self._stop_hotkeys()
@@ -214,6 +217,95 @@ class ClientEngine:
             self.disconnect_line(name)
         else:
             self.connect_line(name)
+
+    # ------------------------------------------------------------------ changing the settings while connected
+
+    def apply_config(self, new: ClientCfg, timeout: float = 30.0) -> "ApplyResult":
+        """Take over new settings without connecting again - everything except the server and the login: other sound
+        devices, microphone processing, dimming, keys, the Companion address, and lines that are added, removed or
+        pointed at another line (only those lines reconnect). Runs on the engine's loop; callable from any thread."""
+        if not (self._loop and self._thread and self._thread.is_alive()):
+            return ApplyResult(False, "not connected")
+        future = asyncio.run_coroutine_threadsafe(self._apply(new), self._loop)
+        try:
+            return future.result(timeout)
+        except Exception as e:  # whatever went wrong, the safe way out is to connect again from the saved file
+            log.exception("applying the settings failed")
+            return ApplyResult(False, f"{type(e).__name__}: {e}")
+
+    async def _apply(self, new: ClientCfg) -> "ApplyResult":
+        old = self.cfg
+        if (old.server_url, old.username, old.password) != (new.server_url, new.username, new.password):
+            return ApplyResult(False, "server or login changed")
+        if old.audio.backend != new.audio.backend:
+            return ApplyResult(False, "audio backend changed")
+        problem: str | None = None
+        hub = self.hub
+        oa, na = old.audio, new.audio
+        if hub and (oa.input_device, oa.output_device, oa.input_channel, oa.output_channels) != (
+                na.input_device, na.output_device, na.input_channel, na.output_channels):
+            try:
+                await hub.reopen(na)
+            except DeviceError as e:
+                problem = f"The new sound devices could not be opened ({e}); the old ones keep running."
+                log.warning("%s", problem)
+        # lines that are gone are stopped while the old configuration still knows them
+        new_names = {l.name for l in new.lines}
+        for name in [l.name for l in old.lines if l.name not in new_names]:
+            await self._set_line(name, False)
+            self.controls.pop(name, None)
+            self.line_enabled.pop(name, None)
+            self._locks.pop(name, None)
+        self.cfg = new
+        self._server = ServerCfg(new.server_url)
+        self._audio_cfg = AudioCfg(new.audio.backend, new.audio.playout_ms)
+        if hub:
+            hub.set_agc_params(na.agc_target_dbfs, na.agc_max_gain_db)
+            hub.set_output_gain_db(na.output_gain_db)
+            if new.dim != old.dim:
+                hub.set_dim(new.dim)
+        self.set_mic_gain_db(na.mic_gain_db)
+        self.set_processing(na.echo_cancellation, na.noise_suppression, na.auto_gain)
+        if new.hotkey_bindings() != old.hotkey_bindings():
+            self.stop_talking_everywhere()  # a key that is about to change must not stay "held"
+            self._stop_hotkeys()
+            self._start_hotkeys()
+        if new.companion_url != old.companion_url:
+            await self._stop_companion()
+            self._start_companion()
+        old_lines = {l.name: l for l in old.lines}
+        for line in new.lines:
+            before = old_lines.get(line.name)
+            if before is None:
+                self.controls[line.name] = LineControl(line.name, line.volume_pct)
+                self._locks[line.name] = asyncio.Lock()
+                self.line_enabled[line.name] = line.autoconnect
+                if line.autoconnect and not self._closing:
+                    self._spawn(line)
+                continue
+            if (before.production_id, before.line_id) != (line.production_id, line.line_id) and self.line_enabled[line.name]:
+                await self._set_line(line.name, False)
+                await self._set_line(line.name, True)  # only this line connects again, now to the new one
+            if line.volume_pct != before.volume_pct:
+                self.controls[line.name].volume_pct = line.volume_pct
+            if line.autoconnect != self.line_enabled[line.name] and line.autoconnect != before.autoconnect:
+                await self._set_line(line.name, line.autoconnect)
+                self.line_enabled[line.name] = line.autoconnect
+        self.order = [l.name for l in new.lines]
+        self._notify()
+        return ApplyResult(True, problem)
+
+    def _start_companion(self) -> None:
+        if self.cfg.companion_url:
+            self._companion = CompanionLink(self, self.cfg.companion_url)
+            self._companion_task = asyncio.ensure_future(self._companion.run())
+
+    async def _stop_companion(self) -> None:
+        task, self._companion_task = self._companion_task, None
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._companion = None
 
     # ------------------------------------------------------------------ hotkeys
 

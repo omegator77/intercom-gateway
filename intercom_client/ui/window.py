@@ -626,6 +626,9 @@ class MainWindow(QMainWindow):
     # -- settings
 
     def open_settings(self) -> None:
+        if self._save_timer.isActive():
+            self._save_timer.stop()
+            self._persist()  # the dialog reads the file: it has to show what the window shows right now
         dlg = ClientSettingsDialog(self.config_path, self)
         accepted = dlg.exec() == ClientSettingsDialog.Accepted
         data, new_password = dlg.result_data, dlg.new_password
@@ -642,7 +645,26 @@ class MainWindow(QMainWindow):
         except OSError as e:
             QMessageBox.critical(self, "Speichern", f"Die Einstellungen konnten nicht gespeichert werden:\n{e}")
             return
-        self.connect_now()  # new settings take effect by connecting again
+        self._take_over_settings()
+
+    def _take_over_settings(self) -> None:
+        """New settings go into the running connection. Only a changed server or login connects everything again;
+        sound devices, microphone processing, dimming, keys, Companion and the line list are applied live (a line
+        that is added, removed or pointed elsewhere is the only one that connects)."""
+        engine = self.engine
+        if engine is None:
+            self.connect_now()
+            return
+        cfg = self._load()
+        if cfg is None:
+            return
+        result = engine.apply_config(cfg)
+        if not result.live:
+            self.connect_now()
+            return
+        if list(self.cards) != [l.name for l in cfg.lines]:
+            self._build_cards(cfg, engine)
+        self._warn(result.reason or "")
 
     def closeEvent(self, event) -> None:
         if self._save_timer.isActive():
