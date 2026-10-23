@@ -1,0 +1,73 @@
+# SIP bridge: puts a SIP / RTP call (broadcast codec, EBU Tech 3326 style) into intercom lines.
+# Copy to sip.toml and run:   intercom-sip check -c sip.toml     then     intercom-sip run -c sip.toml
+# Keep passwords out of this file: use password_env / auth_password_env.
+
+[server]
+url = "https://intercom.example.com"    # address of your Open Intercom manager
+
+[sip]
+sip_port = 5060             # our SIP port (UDP). 0 = any free port
+# local_ip = "203.0.113.5"  # the address we write into SIP and SDP; default: the one the OS uses towards the peer
+rtp_port_min = 5004         # audio goes over UDP ports in this range (even ports; EBU Tech 3326 suggests 5004)
+rtp_port_max = 5100
+
+# Every line a call uses needs its OWN account (role participant in that production), like the gateway.
+# The account's alias / display name is what the people on the line see.
+[[line]]
+name = "Regie-SAW"
+production_id = "2"
+line_id = "1"
+username = "sip-saw-regie"
+password_env = "SIP_REGIE_PASSWORD"
+
+[[line]]
+name = "Kommentar"
+production_id = "2"
+line_id = "5"
+username = "sip-saw-kommentar"
+password_env = "SIP_KOMMENTAR_PASSWORD"
+
+[[line]]
+name = "N-1"
+production_id = "2"
+line_id = "6"
+username = "sip-saw-n1"
+password_env = "SIP_N1_PASSWORD"
+
+# --- A call WE place: OB van -> playout centre. The codec on the other side is on "auto" and follows what we send.
+#
+#   channel   we send                          we receive
+#   left      Regie-SAW (a normal line)        into Regie-SAW (the same line, both ways)
+#   right     Kommentar (only listened to)     into N-1 (only spoken into)
+[[call]]
+name = "SAW Mainz"
+mode = "dial"
+target = "sip:codec@192.0.2.10:5060"    # sip:user@host:port, or just host
+codec = "mp2"                           # mp2 (MPEG Layer II) | g722 | pcmu | pcma | l16
+bitrate_kbps = 192                      # Layer II: 32..384 (mono up to 192)
+sample_rate = 48000                     # Layer II: 32000 | 44100 | 48000
+channel_mode = "dual-mono"              # mono | stereo | dual-mono (two independent channels in one Layer II stream)
+# auth_user = "studio"                  # digest login, if the other side asks for one
+# auth_password_env = "SAW_PASSWORD"
+# redial = true                         # call again when the call ends or never comes up
+# redial_s = 10
+# rtp_timeout_s = 15                    # no audio from the other side for this long -> hang up and redial
+# rtp_latch = false                     # true: behind NAT, send to wherever the other side's audio comes from
+# keep_lines = false                    # true: stay on the lines between calls (default: join when the call is up)
+# in_gain_db = 0.0                      # level from the call into the lines
+# out_gain_db = 0.0                     # level from the lines into the call
+[call.left]
+line = "Regie-SAW"                      # shorthand for send = receive = this line
+[call.right]
+send = "Kommentar"
+receive = "N-1"
+
+# --- A call somebody else places to us: the other side's encoder decides the codec (we take the first one of its
+#     offer that we can do). Only the listed addresses may call.
+# [[call]]
+# name = "Studio Hamburg"
+# mode = "answer"
+# accept_from = ["198.51.100.20"]
+# codec = "mp2"                         # used where the offer leaves details open (rate, bit rate of our own stream)
+# [call.left]
+# line = "Regie-HH"

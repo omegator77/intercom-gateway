@@ -6,6 +6,9 @@ __pycache__/
 *.log.*
 gateway.toml
 gateway.*.toml
+sip.toml
+sip.*.toml
+!sip.example.toml
 dev/.state/
 *.egg-info/
 build/

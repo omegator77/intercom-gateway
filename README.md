@@ -87,6 +87,50 @@ Konsole: `--version`, `--selftest` prüft, ob alle Bibliotheken im gebauten Prog
 Problemen Meldungen aus). Der Gateway hat seinen eigenen Installer (`.\build.ps1`), beide lassen sich nebeneinander
 installieren.
 
+## SIP-Brücke (`intercom-sip`, Entwicklungsstand)
+
+Die SIP-Brücke bringt einen **SIP-/RTP-Anruf** in Leitungen des Intercoms, zum Beispiel die Zuspielung eines
+Übertragungswagens zur Sendeabwicklung über ein Rundfunk-Codec-Gerät (EBU Tech 3326 / N/ACIP). Sie ist ein eigener
+Dienst im selben Paket (`intercom_sip`), nutzt dieselben Bausteine wie das Gateway (Anmeldung, Leitungsverbindung,
+Jitter-Puffer mit Taktausgleich) und läuft auch als Container auf einem Server (`Dockerfile.sip`).
+
+Ein Anruf kann **zwei Kanäle** tragen und ordnet jedem Kanal je Richtung eine Leitung zu:
+
+| Kanal | wir senden zur Gegenstelle | wir empfangen von der Gegenstelle |
+|---|---|---|
+| links | Leitung „Regie-SAW“ | wird in „Regie-SAW“ gesprochen (normale Leitung, beide Richtungen) |
+| rechts | Leitung „Kommentar“ (nur abgehört) | wird in „N-1“ gesprochen (nur hineingesprochen) |
+
+Die Leitungen werden **nur solange der Anruf steht** betreten (`keep_lines = true` hält sie dauerhaft). Die
+SIP-Teilnehmer erscheinen dann wie alle anderen mit dem Namen ihres Accounts in der Teilnehmerliste.
+
+```powershell
+copy sip.example.toml sip.toml        # anpassen; Passwörter nur über *_env
+intercom-sip check -c sip.toml        # Konfiguration, Erreichbarkeit der Gegenstelle (OPTIONS), Logins
+intercom-sip run -c sip.toml
+```
+
+- **Anrufen** (`mode = "dial"`): wir bieten genau ein Format an (Codec, Bitrate, Abtastrate, Kanalmodus). Geräte auf „Auto“
+  folgen dem. **Angerufen werden** (`mode = "answer"`): nur Adressen aus `accept_from` dürfen anrufen; wir nehmen den ersten
+  Codec ihres Angebots, den wir können.
+- **Codecs:** MPEG Layer II (32/44,1/48 kHz, 32 bis 384 kbit/s, mono, stereo oder **dual-mono**), G.722, G.711 (µ-law/A-law)
+  und lineares 16 Bit. **Dual-mono** ist bei Layer II derselbe Strom wie Stereo mit anderem Kanalmodus im Frame-Kopf; den
+  Kopf schreiben wir um (libav kann das nicht selbst). AAC (LD/ELD, HE) ist **noch nicht** enthalten: dafür fehlt der
+  FDK-AAC-Encoder in den üblichen libav-Paketen.
+- **Der Anruf wird überwacht:** kommt `rtp_timeout_s` lang nichts von der Gegenstelle, wird aufgelegt und neu angerufen.
+  Das Log zeigt bei jedem Anruf das SDP der Gegenstelle in einer Zeile, der erste Blick bei Problemen mit fremden Geräten.
+- **Sicherheit:** Audio wird nur von der Adresse angenommen, die das SDP nennt (hinter NAT `rtp_latch = true`). Angerufen wird
+  nur von `accept_from`. SIP ist unverschlüsselt (UDP); die Ports (SIP und der RTP-Bereich) gehören in eine Firewall mit
+  Freigabe nur für die Gegenstellen.
+- **Bewusst nicht enthalten (Stand jetzt):** Registrierung an einem SIP-Server, TCP/TLS/SRTP, RTCP, DTMF, Weiterleitung.
+
+**Geprüft:** Alles unter `tests/test_sip_*.py` (Codecs, RTP, SDP, SIP-Nachrichten, Anruf gegen sich selbst, Kanalzuordnung wie
+oben, Konfiguration). Dazu gegen den lokalen Intercom-Teststack (`dev/e2e_sip.py`: echte Leitungen über den Media-Bridge) und
+gegen **baresip** als unabhängige SIP-/RTP-Implementierung mit Layer-II-Modul (`dev/e2e_sip_baresip.py`, `dev/sip_dial_probe.py`):
+Anrufe in beide Richtungen mit Layer II (dual-mono kommt mit sauber getrennten Kanälen an), G.722 und G.711. **Nicht geprüft** ist
+der Betrieb mit echten Rundfunk-Codecs (Luci, Mayah, Prontonet u. a.): deren SDP-Eigenheiten (z. B. Parameter hinter `a=fmtp`)
+zeigt erst ein echter Anruf.
+
 ## Installation (Entwicklungsstand)
 
 Voraussetzung: Python 3.11 oder neuer, Windows.
@@ -185,7 +229,8 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Die Skripte unter `dev/` brauchen einen lokalen Teststack mit Docker und sprechen nur mit `127.0.0.1`.
+Die Skripte unter `dev/` brauchen einen lokalen Teststack mit Docker und sprechen nur mit `127.0.0.1`. Für die
+SIP-Skripte gegen baresip gilt dasselbe (ein Container `bs-test` mit Debian und baresip, Konfiguration siehe Kopf von `dev/e2e_sip_baresip.py`).
 
 ## Lizenz
 
