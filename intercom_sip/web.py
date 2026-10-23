@@ -15,9 +15,13 @@ import re
 import time
 from pathlib import Path
 
+from urllib.parse import unquote
+
 from . import __version__
+from .admin import ConfigManager
 from .calls import SipService
 from .config import WebCfg
+from .store import KINDS, StoreError
 
 log = logging.getLogger("sip.web")
 
@@ -29,8 +33,9 @@ PAGE_FILE = Path(__file__).with_name("web_page.html")
 
 
 class WebServer:
-    def __init__(self, service: SipService, cfg: WebCfg):
+    def __init__(self, service: SipService, cfg: WebCfg, manager: ConfigManager | None = None):
         self.service = service
+        self.manager = manager
         self.cfg = cfg
         self.port = cfg.port
         self.started = time.monotonic()
@@ -56,7 +61,7 @@ class WebServer:
                 method, path, headers, body = await asyncio.wait_for(self._read(reader), 10)
             except (asyncio.TimeoutError, ValueError, asyncio.IncompleteReadError, ConnectionError):
                 return
-            status, ctype, payload, extra = self._route(method, path, headers, body)
+            status, ctype, payload, extra = await self._route(method, path, headers, body)
             head = [f"HTTP/1.1 {status} {REASONS.get(status, '')}", f"Content-Type: {ctype}",
                     f"Content-Length: {len(payload)}", "Cache-Control: no-store", "Connection: close",
                     "X-Content-Type-Options: nosniff", "Referrer-Policy: no-referrer"] + extra
@@ -121,7 +126,7 @@ class WebServer:
     def _json(status: int, obj) -> tuple[int, str, bytes, list[str]]:
         return status, "application/json", json.dumps(obj).encode("utf-8"), []
 
-    def _route(self, method: str, path: str, headers: dict, body: bytes):
+    async def _route(self, method: str, path: str, headers: dict, body: bytes):
         if not self._allowed_host(headers.get("host", "")):
             return self._json(403, {"error": "unknown host name"})
         extra: list[str] = []
@@ -145,7 +150,7 @@ class WebServer:
             if headers.get("x-requested-with") != "intercom-sip":  # a page of another site cannot set this header
                 return self._json(403, {"error": "missing header"})
             index = int(m.group(1))
-            if index >= len(self.service.runners):
+            if self.service.runner(index) is None:
                 return self._json(404, {"error": "no such call"})
             if m.group(2) == "dial":
                 try:
@@ -157,7 +162,47 @@ class WebServer:
             else:
                 problem = self.service.hangup(index)
             return self._json(409, {"error": problem}) if problem else self._json(200, {"ok": True})
+        if path.startswith("/api/") and method in ("POST", "PUT", "DELETE", "GET") and self.manager is not None:
+            result = await self._settings(method, path, headers, body)
+            if result is not None:
+                return result
         return self._json(404, {"error": "not found"})
+
+    async def _settings(self, method: str, path: str, headers: dict, body: bytes):
+        """Accounts, intercom lines and call profiles: /api/config and /api/<accounts|lines|calls>[/<name>]."""
+        assert self.manager is not None
+        if path == "/api/config" and method == "GET":
+            return self._json(200, self.manager.view())
+        parts = [unquote(p) for p in path.split("/")[2:]]
+        if not parts or parts[0] not in KINDS or len(parts) > 2:
+            return None
+        if method != "GET" and headers.get("x-requested-with") != "intercom-sip":
+            return self._json(403, {"error": "missing header"})
+        try:
+            data = json.loads(body or b"{}")
+        except ValueError:
+            return self._json(400, {"error": "ungültige Eingabe"})
+        if not isinstance(data, dict):
+            return self._json(400, {"error": "ungültige Eingabe"})
+        kind = parts[0]
+        try:
+            if len(parts) == 2 and kind == "accounts" and parts[1] == "test" and method == "POST":
+                return self._json(200, await self.manager.test_account(data))
+            if len(parts) == 2 and kind == "lines" and parts[1] == "discover" and method == "POST":
+                found = await self.manager.discover_lines(str(data.get("username", "")), str(data.get("password", "")),
+                                                            str(data.get("name", "")) or None)
+                return self._json(200, {"lines": found})
+            if method == "POST" and len(parts) == 1:
+                await self.manager.save(kind, None, data)
+            elif method == "PUT" and len(parts) == 2:
+                await self.manager.save(kind, parts[1], data)
+            elif method == "DELETE" and len(parts) == 2:
+                await self.manager.delete(kind, parts[1])
+            else:
+                return None
+        except StoreError as e:
+            return self._json(400, {"error": str(e)})
+        return self._json(200, {"ok": True})
 
     def status(self) -> dict:
         s = self.service.status()

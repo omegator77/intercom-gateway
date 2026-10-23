@@ -69,6 +69,7 @@ class CallRunner:
         self._dial_target: str | None = None
         self._one_off = False  # the call asked for was a number typed in by hand
         self._paused = not cfg.autostart  # a dialling profile does not call by itself while paused
+        self.uid = 0  # stable number of this profile while the service runs (the page addresses profiles by it)
         self.direction = ""  # "out" or "in" for the call that is up
         self._busy = False
         self._answer: asyncio.Future | None = None  # answering: resolves to (dialog, media, fmt) when a call is established
@@ -463,23 +464,111 @@ class CallRunner:
         }
 
 
+class ReconfigError(Exception):
+    """A change of the configuration cannot be applied right now; the message is fit to show the user."""
+
+
 class SipService:
-    """All calls of one configuration, sharing one SIP port, one HTTP client and one login per line account."""
+    """All calls of one configuration, sharing one SIP port, one HTTP client and one login per line account.
+    Accounts and call profiles can be added, changed and removed while it runs (`apply`)."""
 
     def __init__(self, cfg: SipConfig, http: httpx.AsyncClient):
         self.cfg = cfg
         self.http = http
         self.ua = SipEndpoint(cfg.sip.sip_port, cfg.sip.user, cfg.sip.display_name, cfg.sip.local_ip, cfg.sip.bind_ip)
-        auths = {n: AuthClient(http, l.username, l.password) for n, l in cfg.lines.items()}
-        self.registrations = {n: Registration(self.ua, a) for n, a in cfg.accounts.items()}
-        self.runners = [CallRunner(c, self.ua, cfg.sip, cfg.server, cfg.audio, cfg.lines, http, auths, cfg.debug,
-                                   cfg.accounts.get(c.account) if c.account else None) for c in cfg.calls]
-        for r in self.runners:
-            if r.cfg.account:
-                r.registration_domain = self.registrations[r.cfg.account].domain
+        self._auths: dict[str, AuthClient] = {}
+        self.registrations: dict[str, Registration] = {}
+        self.runners: list[CallRunner] = []
+        self._next_uid = 0
+        self._runner_tasks: dict[int, asyncio.Task] = {}
+        self._reg_tasks: dict[str, asyncio.Task] = {}
+        self._closing = asyncio.Event()
+        self._running = False
+        self._sync_auths(cfg)
+        for a in cfg.accounts.values():
+            self._add_registration(a)
+        for c in cfg.calls:
+            self._add_runner(c)
         self._by_call_id: dict[str, CallRunner] = {}
         self.ua.on_invite = self._on_invite
         self.ua.on_accepted = self._on_accepted
+
+    # ------------------------------------------------------------ the parts
+    def _sync_auths(self, cfg: SipConfig) -> None:
+        """One login per line account, kept as long as the account's name and password stay the same."""
+        for n, l in cfg.lines.items():
+            old = self._auths.get(n)
+            if old is None or (old._user, old._pw) != (l.username, l.password):
+                self._auths[n] = AuthClient(self.http, l.username, l.password)
+        for n in [n for n in self._auths if n not in cfg.lines]:
+            del self._auths[n]
+
+    def _add_registration(self, acc: RegisterCfg) -> None:
+        reg = self.registrations[acc.name] = Registration(self.ua, acc)
+        if self._running:
+            self._reg_tasks[acc.name] = asyncio.ensure_future(reg.run())
+
+    async def _remove_registration(self, name: str) -> None:
+        reg = self.registrations.pop(name)
+        reg.stop()
+        task = self._reg_tasks.pop(name, None)
+        if task is not None:
+            await asyncio.wait({task}, timeout=8)
+            task.cancel()
+
+    def _add_runner(self, c: CallCfg) -> CallRunner:
+        r = CallRunner(c, self.ua, self.cfg.sip, self.cfg.server, self.cfg.audio, self.cfg.lines, self.http, self._auths,
+                       self.cfg.debug, self.cfg.accounts.get(c.account) if c.account else None)
+        r.uid = self._next_uid
+        self._next_uid += 1
+        if c.account:
+            r.registration_domain = self.registrations[c.account].domain
+        self.runners.append(r)
+        if self._running:
+            self._runner_tasks[r.uid] = asyncio.ensure_future(r.run())
+        return r
+
+    async def _remove_runner(self, r: CallRunner) -> None:
+        r.stop()
+        task = self._runner_tasks.pop(r.uid, None)
+        if task is not None:
+            done, pending = await asyncio.wait({task}, timeout=LINE_STOP_WAIT_S + 5)
+            for t in pending:
+                t.cancel()
+        self.runners.remove(r)
+
+    @staticmethod
+    def _fingerprint(cfg: SipConfig, c: CallCfg):
+        """Everything a running call profile depends on: when it differs, the profile is replaced."""
+        return (c, cfg.accounts.get(c.account) if c.account else None, tuple(cfg.lines[n] for n in c.line_names))
+
+    def runner(self, uid: int) -> CallRunner | None:
+        return next((r for r in self.runners if r.uid == uid), None)
+
+    async def apply(self, new: SipConfig) -> None:
+        """Make the running service match `new`: accounts and call profiles are added, replaced or removed, the rest
+        keeps running untouched. Raises ReconfigError, with nothing changed, if a profile that has to be replaced
+        is in a call right now."""
+        wanted = {c.name: c for c in new.calls}
+        change = [r for r in self.runners
+                  if r.cfg.name not in wanted or self._fingerprint(self.cfg, r.cfg) != self._fingerprint(new, wanted[r.cfg.name])]
+        busy = [r.cfg.name for r in change if r.in_call or r._busy]
+        if busy:
+            raise ReconfigError("Gerade im Gespräch: " + ", ".join(f"„{n}“" for n in busy) + ". Erst auflegen, dann ändern.")
+        for r in change:
+            await self._remove_runner(r)
+        for name in list(self.registrations):
+            if name not in new.accounts or new.accounts[name] != self.registrations[name].cfg:
+                await self._remove_registration(name)
+        self.cfg = new
+        self._sync_auths(new)
+        for name, acc in new.accounts.items():
+            if name not in self.registrations:
+                self._add_registration(acc)
+        have = {r.cfg.name for r in self.runners}
+        for c in new.calls:
+            if c.name not in have:
+                self._add_runner(c)
 
     async def _on_invite(self, call: IncomingCall) -> "Accept | Reject":
         for r in self.runners:
@@ -518,32 +607,39 @@ class SipService:
         await self.ua.start()
 
     async def run(self) -> None:
-        tasks = [r.run() for r in self.runners]
-        regs = [asyncio.ensure_future(r.run()) for r in self.registrations.values()]
-        try:
-            await asyncio.gather(*tasks)
-        finally:
-            for r in self.registrations.values():
-                r.stop()
-            if regs:
-                await asyncio.wait(regs, timeout=8)
-            for t in regs:
+        self._running = True
+        for r in self.runners:
+            self._runner_tasks.setdefault(r.uid, asyncio.ensure_future(r.run()))
+        for n, reg in self.registrations.items():
+            self._reg_tasks.setdefault(n, asyncio.ensure_future(reg.run()))
+        await self._closing.wait()
+        if self._runner_tasks:
+            await asyncio.gather(*self._runner_tasks.values(), return_exceptions=True)
+        for reg in self.registrations.values():
+            reg.stop()
+        if self._reg_tasks:
+            await asyncio.wait(self._reg_tasks.values(), timeout=8)
+            for t in self._reg_tasks.values():
                 t.cancel()
+        self._running = False
 
     def stop(self) -> None:
+        self._closing.set()
         for r in self.runners:
             r.stop()
 
     async def close(self) -> None:
         await self.ua.close()
 
-    def dial(self, index: int, number: str | None = None) -> str | None:
-        return self.runners[index].request_dial(number)
+    def dial(self, uid: int, number: str | None = None) -> str | None:
+        r = self.runner(uid)
+        return r.request_dial(number) if r else "Dieses Anruf-Profil gibt es nicht."
 
-    def hangup(self, index: int) -> str | None:
-        return self.runners[index].request_hangup()
+    def hangup(self, uid: int) -> str | None:
+        r = self.runner(uid)
+        return r.request_hangup() if r else "Dieses Anruf-Profil gibt es nicht."
 
     def status(self) -> dict:
-        return {"sip_port": self.ua.port, "calls": [dict(r.status(), id=i) for i, r in enumerate(self.runners)],
+        return {"sip_port": self.ua.port, "calls": [dict(r.status(), id=r.uid) for r in self.runners],
                 "registrations": [{"account": n, "address": r.address, "state": r.state, "last_error": r.last_error}
                                   for n, r in self.registrations.items()]}

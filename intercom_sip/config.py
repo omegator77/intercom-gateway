@@ -17,7 +17,8 @@ from .codecs import AudioFormat, CODECS, CodecError, MODES, validate_format
 from .registration import RegisterCfg
 from .sip import SipError, parse_uri
 
-__all__ = ["ConfigError", "SipCfg", "ChannelCfg", "CallCfg", "SipConfig", "parse_sip_config", "load_sip_config"]
+__all__ = ["ConfigError", "SipCfg", "ChannelCfg", "CallCfg", "SipConfig", "WebCfg", "merge_raw", "parse_sip_config",
+           "load_sip_config", "read_toml"]
 
 
 @dataclass(frozen=True)
@@ -143,12 +144,25 @@ def _channel(raw: Mapping, name: str, side: str) -> ChannelCfg:
     return ChannelCfg(send, receive)
 
 
+def merge_raw(data: Mapping, extra: Mapping) -> dict:
+    """The parsed TOML file plus further `account` / `line` / `call` tables (the page's settings)."""
+    out = dict(data)
+    for key in ("account", "line", "call"):
+        names = {e.get("name") for e in data.get(key, [])}
+        for e in extra.get(key, []):
+            if e["name"] in names:
+                raise ConfigError(f"{key} {e['name']!r} is defined in the TOML file and in the settings of the page")
+        out[key] = list(data.get(key, [])) + list(extra.get(key, []))
+    return out
+
+
 def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
-                     lookup_password: Callable[[str, str], str | None] | None = None) -> SipConfig:
+                     lookup_password: Callable[[str, str], str | None] | None = None,
+                     require_calls: bool = True) -> SipConfig:
     env = os.environ if env is None else env
     base = {k: v for k, v in data.items() if k in ("server", "line", "debug")}
     base["audio"] = {"backend": "synthetic", "playout_ms": (data.get("audio") or {}).get("playout_ms", 60)}
-    gw = parse_config(base, env, lookup_password)  # servers, accounts and passwords exactly as the gateway reads them
+    gw = parse_config(base, env, lookup_password, require_lines=False)  # servers, accounts and passwords exactly as the gateway reads them
     lines = {l.name: l for l in gw.lines}
 
     sip_raw = data.get("sip") or {}
@@ -299,19 +313,22 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
             rtp_latch=bool(raw.get("rtp_latch", False)), playout_ms=int(_num(raw, "playout_ms", 60, 20, 500, where)),
             in_gain_db=_num(raw, "in_gain_db", 0.0, -40, 40, where), out_gain_db=_num(raw, "out_gain_db", 0.0, -40, 40, where),
         ))
-    if not calls:
+    if not calls and require_calls:
         raise ConfigError("no enabled [[call]] configured")
     return SipConfig(gw.server, gw.audio, sip, accounts, lines, tuple(calls), gw.debug, _web(data.get("web") or {}, env))
 
 
-def load_sip_config(path: str | Path, env: Mapping[str, str] | None = None,
-                    lookup_password: Callable[[str, str], str | None] | None = None) -> SipConfig:
+def read_toml(path: str | Path) -> dict:
     p = Path(path)
     try:
         with p.open("rb") as f:
-            data = tomllib.load(f)
+            return tomllib.load(f)
     except FileNotFoundError:
         raise ConfigError(f"config file not found: {p}") from None
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"invalid TOML in {p}: {e}") from None
-    return parse_sip_config(data, env, lookup_password)
+
+
+def load_sip_config(path: str | Path, env: Mapping[str, str] | None = None,
+                    lookup_password: Callable[[str, str], str | None] | None = None) -> SipConfig:
+    return parse_sip_config(read_toml(path), env, lookup_password)

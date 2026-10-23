@@ -140,6 +140,20 @@ intercom-sip run -c sip.toml
   **Auflegen** wählt es nicht mehr von selbst, bis jemand wieder auf Anrufen drückt. `answer` wartet nur auf Anrufe.
   `both` wartet angemeldet auf Anrufe und ruft nur auf Knopfdruck an, so wie ein Hardware-Codec; dieselben Leitungen
   dienen dann in beide Richtungen.
+- **Einstellungen auf der Seite:** Konten, Intercom-Leitungen und Anruf-Profile legst du auf der Statusseite an, änderst und
+  löschst sie, **ohne Neustart** und ohne die Konfigurationsdatei anzufassen.
+  - *Konto:* Server, Nummer, Passwort (mit „Anmeldung testen“). Die Anmeldung läuft sofort; ändert oder löscht man das Konto,
+    wird die alte Anmeldung zuerst abgemeldet.
+  - *Leitung:* Name, Benutzername und Passwort des Intercom-Accounts der Leitung, dann „Leitungen laden“: die Seite fragt den
+    Intercom-Manager, welche Leitungen dieser Account betreten darf, und du wählst eine aus der Liste.
+  - *Profil:* Konto (oder direkt), Verhalten, Ziel, Codec, Datenrate, Kanalmodus und **pro Kanal die Leitung, aus der gesendet
+    und in die gesprochen wird**.
+  - Ein Profil, das gerade im Gespräch ist, lässt sich nicht ändern oder löschen („erst auflegen“); ein ungültiger Wert wird
+    abgelehnt, und dann bleibt alles wie es war.
+  - Die Einstellungen stehen in `sip-data.json` neben der `sip.toml` (oder bei `[store] path = "..."`). Die Datei enthält die
+    Passwörter im Klartext und wird nur für den Besitzer lesbar geschrieben. Die Seite gibt nie ein Passwort zurück; ein leeres
+    Passwortfeld beim Ändern lässt das gespeicherte unverändert. Was in der `sip.toml` steht, zeigt die Seite an („aus der
+    Datei“), ändern lässt es sich nur dort.
 - **Bewusst nicht enthalten (Stand jetzt):** TCP/TLS/SRTP, RTCP, DTMF, Weiterleitung.
 
 **Geprüft:** Alles unter `tests/test_sip_*.py` (Codecs, RTP, SDP, SIP-Nachrichten, Anruf gegen sich selbst, Kanalzuordnung wie

@@ -11,6 +11,12 @@ sip_port = 5060             # our SIP port (UDP). 0 = any free port
 rtp_port_min = 5004         # audio goes over UDP ports in this range (even ports; EBU Tech 3326 suggests 5004)
 rtp_port_max = 5100
 
+# Accounts, intercom lines and call profiles can be created, changed and deleted on the status page itself (they are kept
+# in sip-data.json next to this file; [store] path = "..." moves it). The tables below work as well and are shown on the
+# page as "from the file" (read-only). A file with only [server], [sip] and [web] is enough to start.
+# [store]
+# path = "sip-data.json"
+
 # The status page (accounts, calls with levels and lines, buttons to call and hang up). By default only this machine
 # can open it; for any other address a password is required.
 # [web]

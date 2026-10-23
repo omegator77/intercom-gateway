@@ -14,7 +14,9 @@ from gateway.http import create_client
 
 from . import __version__
 from .calls import SipService
-from .config import ConfigError, SipConfig, load_sip_config
+from .admin import ConfigManager
+from .config import ConfigError, SipConfig, merge_raw, parse_sip_config, read_toml
+from .store import Store, StoreError
 from .registration import Registration
 from .web import WebServer
 from .sip import SipEndpoint, SipError, parse_uri
@@ -96,7 +98,7 @@ async def cmd_check(cfg: SipConfig) -> int:
     return 0 if ok else 1
 
 
-async def cmd_run(cfg: SipConfig, status_every: float, seconds: float | None) -> int:
+async def cmd_run(cfg: SipConfig, toml_data: dict, store: Store, status_every: float, seconds: float | None) -> int:
     loop = asyncio.get_running_loop()
     http = await create_client(cfg.server.url)
     service = SipService(cfg, http)
@@ -108,7 +110,7 @@ async def cmd_run(cfg: SipConfig, status_every: float, seconds: float | None) ->
         return 3
     web = None
     if cfg.web.enabled:
-        web = WebServer(service, cfg.web)
+        web = WebServer(service, cfg.web, ConfigManager(service, toml_data, store))
         try:
             await web.start()
         except OSError as e:  # the bridge works without its page
@@ -168,13 +170,19 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     setup_logging(a.verbose, getattr(a, "log_file", None))
     try:
-        cfg = load_sip_config(a.config)
-    except ConfigError as e:
+        toml_data = read_toml(a.config)
+        store_path = (toml_data.get("store") or {}).get("path") or Path(a.config).resolve().with_name("sip-data.json")
+        store = Store(Path(store_path))
+        store.load()
+        cfg = parse_sip_config(merge_raw(toml_data, store.raw()), require_calls=False)
+    except (ConfigError, StoreError) as e:
         print(f"config error: {e}", file=sys.stderr)
         return 2
     if a.cmd == "check":
         return asyncio.run(cmd_check(cfg))
-    return asyncio.run(cmd_run(cfg, a.status_every, a.seconds))
+    if not cfg.calls:
+        log.info("no call profile yet - add accounts, lines and profiles on the status page")
+    return asyncio.run(cmd_run(cfg, toml_data, store, a.status_every, a.seconds))
 
 
 if __name__ == "__main__":

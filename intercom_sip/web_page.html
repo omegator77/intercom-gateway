@@ -10,6 +10,7 @@
     --accent: #0a6b5c; --accent-ink: #ffffff; --accent-soft: #d6efe9;
     --ok: #17703f; --ok-bg: #d9f1e3; --warn: #8f5500; --warn-bg: #fbebcb; --bad: #a3261d; --bad-bg: #f8dcd8;
     --off: #5f6c68; --off-bg: #e6ebe9; --meter-bg: #e3e8e6; --meter: #12907b; --meter-hot: #d98a00;
+    --backdrop: rgba(16, 24, 22, 0.45);
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -17,17 +18,20 @@
       --accent: #45c1a7; --accent-ink: #07201a; --accent-soft: #1b3a33;
       --ok: #6fd9a0; --ok-bg: #173a2a; --warn: #f0b95a; --warn-bg: #3a2c12; --bad: #ff8d84; --bad-bg: #402220;
       --off: #93a29c; --off-bg: #25302c; --meter-bg: #26312e; --meter: #45c1a7; --meter-hot: #f0b95a;
+      --backdrop: rgba(0, 0, 0, 0.6);
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, "Segoe UI", sans-serif; }
   main { max-width: 1080px; margin: 0 auto; padding: 24px 16px 56px; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
   header.top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 24px; }
   h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0; font-weight: 600; }
   h3 { font-size: 17px; margin: 0; }
   .meta, .sub { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
   section, article { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .sec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
   .calls { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
   article header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; }
   .peer { margin: 8px 0 2px; font-variant-numeric: tabular-nums; min-height: 22px; }
@@ -36,6 +40,7 @@
   th { text-align: left; font-weight: 500; color: var(--muted); font-size: 13px; padding: 4px 12px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
   td { padding: 7px 12px 7px 0; border-bottom: 1px solid var(--line); vertical-align: middle; }
   tr:last-child td { border-bottom: 0; }
+  td.act { text-align: right; white-space: nowrap; padding-right: 0; }
   .empty { color: var(--muted); }
   .pill { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600; white-space: nowrap; }
   .ok { background: var(--ok-bg); color: var(--ok); }
@@ -56,16 +61,38 @@
   .err { margin-top: 10px; padding: 8px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); font-size: 14px; }
   .err[hidden] { display: none; }
   form.controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; align-items: center; padding-top: 14px; border-top: 1px solid var(--line); }
-  input { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--field); color: var(--ink); min-width: 230px; flex: 1 1 230px; max-width: 360px; }
+  input, select { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--field); color: var(--ink); min-width: 0; }
+  form.controls input { min-width: 230px; flex: 1 1 230px; max-width: 360px; }
   button { font: inherit; padding: 8px 18px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; font-weight: 600; }
+  button.small { padding: 4px 12px; font-size: 13px; }
   button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   button.danger { color: var(--bad); border-color: var(--bad); }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
-  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .msg { font-size: 13px; color: var(--muted); }
   .msg.bad { color: var(--bad); }
+  .msg.good { color: var(--ok); }
   .banner { padding: 10px 14px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); }
   .banner[hidden] { display: none; }
+  .hint { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+  /* settings dialogs */
+  dialog { width: min(680px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 20px 22px; }
+  dialog::backdrop { background: var(--backdrop); }
+  dialog h3 { margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; align-items: start; }
+  .grid .wide { grid-column: 1 / -1; }
+  label.f { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+  label.f input, label.f select { color: var(--ink); width: 100%; }
+  label.check { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--ink); }
+  label.check input { width: auto; }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0; }
+  .dlg-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .dlg-actions .spacer { flex: 1; }
+  .chanmap th, .chanmap td { padding-right: 10px; }
+  .chanmap select { width: 100%; min-width: 140px; }
+  .help { font-size: 12.5px; color: var(--muted); }
+  @media (max-width: 560px) { .grid { grid-template-columns: minmax(0, 1fr); } }
 </style>
 </head>
 <body>
@@ -77,7 +104,7 @@
   <div class="banner" id="banner" hidden></div>
 
   <section>
-    <h2>Konten</h2>
+    <h2 style="margin-bottom:10px">Anmeldungen</h2>
     <div class="table-wrap"><table>
       <thead><tr><th>Konto</th><th>Adresse</th><th>Anmeldung</th></tr></thead>
       <tbody id="accounts"></tbody>
@@ -85,7 +112,38 @@
   </section>
 
   <div class="calls" id="calls"></div>
+  <div class="hint" id="nocalls" hidden>Noch kein Anruf-Profil. Lege unten zuerst ein Konto und die Leitungen an und dann ein Profil.</div>
+
+  <section id="settings">
+    <div class="sec-head"><h2>Konten (SIP-Server)</h2><button class="small primary" id="add-accounts">Konto anlegen</button></div>
+    <p class="hint">Wie die Anmeldung eines Hardware-Codecs: Server, Nummer und Passwort. Ein Anruf-Profil benutzt ein Konto.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Name</th><th>Server</th><th>Nummer</th><th>Benutzt von</th><th></th></tr></thead>
+      <tbody id="list-accounts"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Leitungen (Intercom)</h2><button class="small primary" id="add-lines">Leitung anlegen</button></div>
+    <p class="hint">Jede Leitung braucht einen eigenen Intercom-Account. Hier trägst du ihn ein und wählst die Leitung aus der Liste des Servers.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Name</th><th>Intercom-Account</th><th>Produktion · Leitung</th><th>Benutzt von</th><th></th></tr></thead>
+      <tbody id="list-lines"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Anruf-Profile</h2><button class="small primary" id="add-calls">Profil anlegen</button></div>
+    <p class="hint">Ein Profil verbindet ein Konto mit Codec und Leitungen: welcher Kanal aus welcher Leitung gesendet und in welche gesprochen wird.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Name</th><th>Modus</th><th>Konto</th><th>Format</th><th>Kanäle</th><th></th></tr></thead>
+      <tbody id="list-calls"></tbody>
+    </table></div>
+  </section>
+  <div class="msg" id="settings-msg" role="status"></div>
 </main>
+
+<dialog id="dlg"><form method="dialog" id="dlg-form" autocomplete="off"></form></dialog>
 
 <script>
 "use strict";
@@ -98,10 +156,22 @@ const STATE = {
 };
 const REG = { registered: ["angemeldet", "ok"], failed: ["Fehler", "bad"], idle: ["meldet an …", "warn"], stopped: ["abgemeldet", "off"] };
 const LINE = { connected: ["verbunden", "ok"], connecting: ["verbindet …", "warn"], login: ["meldet an …", "warn"], backoff: ["neuer Versuch", "warn"], idle: ["–", "off"], stopped: ["–", "off"] };
+const MODE = { dial: "ruft an", answer: "nimmt Anrufe an", both: "nimmt an, ruft auf Wunsch an" };
+const CODECS = {
+  mp2: { label: "MPEG Layer II", rates: [48000, 44100, 32000], modes: ["dual-mono", "stereo", "mono"],
+         bitrates: { mono: [32, 48, 56, 64, 80, 96, 112, 128, 160, 192], two: [64, 96, 112, 128, 160, 192, 224, 256, 320, 384] } },
+  g722: { label: "G.722", rates: [16000], modes: ["mono"] },
+  pcmu: { label: "G.711 µ-law", rates: [8000], modes: ["mono"] },
+  pcma: { label: "G.711 A-law", rates: [8000], modes: ["mono"] },
+  l16: { label: "Linear 16 Bit", rates: [48000, 44100, 32000], modes: ["stereo", "mono"] },
+};
+const MODE_LABEL = { "dual-mono": "Dual-Mono (zwei getrennte Kanäle)", stereo: "Stereo", mono: "Mono" };
 const cards = new Map();
+let config = { accounts: [], lines: [], calls: [], server_url: "" };
 
 function pill(node, [text, kind]) { node.textContent = text; node.className = "pill " + kind; }
 
+/* ---------------------------------------------------------------- status and calls */
 function meter(db) {
   const wrap = el("div", "meter"), bar = el("div", "bar"), fill = el("div", "fill"), num = el("span", "db", "–");
   bar.append(fill); wrap.append(bar, num);
@@ -149,7 +219,7 @@ function makeCard(c) {
   };
   form.addEventListener("submit", (e) => { e.preventDefault(); post("dial", { number: input.value.trim() }); });
   hang.addEventListener("click", () => post("hangup"));
-  return { root, sub, st, peer, rows, stats, lines, err, input, dial, hang, kind: c.channels.length };
+  return { root, sub, st, peer, rows, stats, lines, err, input, dial, hang, shape: JSON.stringify(c.channels) + c.call };
 }
 
 function statLine(parts) {
@@ -161,7 +231,7 @@ function statLine(parts) {
 function updateCard(card, c) {
   const kind = c.state === "idle" && c.paused ? ["pausiert", "off"] : (STATE[c.state] || [c.state, "off"]);
   pill(card.st, kind);
-  card.sub.textContent = [c.account ? `Konto ${c.account}` : "direkt", { dial: "ruft an", answer: "nimmt Anrufe an", both: "nimmt an, ruft auf Wunsch an" }[c.mode], c.wanted].join(" · ");
+  card.sub.textContent = [c.account ? `Konto ${c.account}` : "direkt", MODE[c.mode], c.wanted].join(" · ");
   card.peer.textContent = c.state === "connected"
     ? `${c.direction === "in" ? "Eingehend von" : "Ausgehend zu"} ${c.peer || "?"} · seit ${clock(c.uptime_s)}`
     : (c.state === "waiting" ? "Bereit, angemeldet für Anrufe." : "");
@@ -188,7 +258,6 @@ function updateCard(card, c) {
   card.dial.hidden = card.input.hidden;
   card.dial.disabled = !c.can_dial;
   card.hang.disabled = !c.can_hangup;
-  card.hang.hidden = false;
 }
 
 function render(s) {
@@ -202,11 +271,16 @@ function render(s) {
     const last = el("td"); last.append(st); if (r.last_error) last.append(" " + r.last_error);
     tr.append(el("td", "", r.account), el("td", "mono", r.address.replace(/^sip:/, "")), last); body.append(tr);
   }
+  const ids = new Set(s.calls.map((c) => c.id));
+  for (const [id, card] of cards) if (!ids.has(id)) { card.root.remove(); cards.delete(id); }
   for (const c of s.calls) {
     let card = cards.get(c.id);
-    if (!card) { card = makeCard(c); cards.set(c.id, card); $("calls").append(card.root); }
+    if (!card) { card = makeCard(c); cards.set(c.id, card); }
     updateCard(card, c);
   }
+  const holder = $("calls");
+  s.calls.forEach((c, i) => { const node = cards.get(c.id).root; if (holder.children[i] !== node) holder.insertBefore(node, holder.children[i] || null); });
+  $("nocalls").hidden = s.calls.length > 0;
 }
 
 async function refresh() {
@@ -219,6 +293,270 @@ async function refresh() {
     $("banner").textContent = "Die Brücke antwortet nicht.";
   }
 }
+
+/* ---------------------------------------------------------------- settings */
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: { "X-Requested-With": "intercom-sip", "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  let j = {};
+  try { j = await r.json(); } catch (e) { /* no body */ }
+  if (!r.ok) throw new Error(j.error || `Fehler ${r.status}`);
+  return j;
+}
+
+function note(text, kind) { const n = $("settings-msg"); n.className = "msg " + (kind || ""); n.textContent = text; if (text) setTimeout(() => { if (n.textContent === text) n.textContent = ""; }, 8000); }
+
+function actions(kind, item) {
+  const td = el("td", "act");
+  if (item.origin === "file") { td.append(el("span", "pill off", "aus der Datei")); return td; }
+  const edit = el("button", "small", "Bearbeiten"), del = el("button", "small danger", "Löschen");
+  edit.type = del.type = "button";
+  edit.addEventListener("click", () => openForm(kind, item));
+  del.addEventListener("click", async () => {
+    if (!confirm(`„${item.name}“ löschen?`)) return;
+    try { await api("DELETE", `/api/${kind}/${encodeURIComponent(item.name)}`); note(`„${item.name}“ ist gelöscht.`, "good"); await loadConfig(); refresh(); }
+    catch (e) { note(e.message, "bad"); }
+  });
+  td.append(edit, " ", del);
+  return td;
+}
+
+function usedBy(item) { return item.used_by && item.used_by.length ? item.used_by.join(", ") : "–"; }
+
+function channelText(c) {
+  const side = (ch) => [ch && ch.send ? `sendet ${ch.send}` : "", ch && ch.receive ? `spricht in ${ch.receive}` : ""].filter(Boolean).join(", ") || "–";
+  const mono = (CODECS[c.codec || "mp2"].modes.length === 1) || c.channel_mode === "mono";
+  return mono ? side(c.left) : `links: ${side(c.left)}  ·  rechts: ${side(c.right)}`;
+}
+
+function formatText(c) {
+  const k = c.codec || "mp2", d = CODECS[k];
+  const rate = c.sample_rate || d.rates[0];
+  const mode = c.channel_mode || (k === "mp2" ? "dual-mono" : d.modes[0]);
+  return k === "mp2" ? `${d.label} ${c.bitrate_kbps || 192} kbit/s ${rate / 1000} kHz ${mode}` : `${d.label}${k === "l16" ? ` ${rate / 1000} kHz ${mode}` : ""}`;
+}
+
+function fillTable(id, rows, cols, none) {
+  const body = $(id); body.replaceChildren();
+  if (!rows.length) { const tr = el("tr"), td = el("td", "empty", none); td.colSpan = 6; tr.append(td); body.append(tr); return; }
+  for (const r of rows) { const tr = el("tr"); cols(r).forEach((c) => tr.append(c)); body.append(tr); }
+}
+
+function renderConfig() {
+  fillTable("list-accounts", config.accounts, (a) => [el("td", "", a.name), el("td", "mono", a.registrar.replace(/^sip:/, "")),
+    el("td", "", a.user + (a.domain ? "@" + a.domain : "")), el("td", "", usedBy(a)), actions("accounts", a)], "Noch kein Konto.");
+  fillTable("list-lines", config.lines, (l) => [el("td", "", l.name), el("td", "", l.username),
+    el("td", "mono", `Produktion ${l.production_id} · Leitung ${l.line_id}`), el("td", "", usedBy(l)), actions("lines", l)], "Noch keine Leitung.");
+  fillTable("list-calls", config.calls, (c) => [el("td", "", c.name), el("td", "", MODE[c.mode || "dial"]), el("td", "", c.account || "direkt"),
+    el("td", "", formatText(c)), el("td", "", channelText(c)), actions("calls", c)], "Noch kein Profil.");
+}
+
+async function loadConfig() { config = await api("GET", "/api/config"); renderConfig(); }
+
+/* form building blocks */
+function field(label, input, wide, help) {
+  const l = el("label", "f" + (wide ? " wide" : "")); l.append(label, input);
+  if (help) l.append(el("span", "help", help));
+  return l;
+}
+function text(name, value, placeholder, type) { const i = el("input"); i.type = type || "text"; i.name = name; i.value = value ?? ""; if (placeholder) i.placeholder = placeholder; return i; }
+function select(name, options, value) {
+  const s = el("select"); s.name = name;
+  for (const [v, t] of options) { const o = el("option", "", t); o.value = v; s.append(o); }
+  s.value = value ?? options[0][0]; return s;
+}
+function check(name, label, on) { const l = el("label", "check"), i = el("input"); i.type = "checkbox"; i.name = name; i.checked = !!on; l.append(i, label); return l; }
+
+const dlg = $("dlg"), dform = $("dlg-form");
+
+function dialog(title, grid, extra, onSave, buttons) {
+  dform.replaceChildren();
+  const msg = el("div", "msg"); msg.setAttribute("role", "alert");
+  const save = el("button", "primary", "Speichern"), cancel = el("button", "", "Abbrechen");
+  save.type = "submit"; cancel.type = "button";
+  cancel.addEventListener("click", () => dlg.close());
+  const acts = el("div", "dlg-actions");
+  for (const b of buttons || []) acts.append(b);
+  acts.append(el("span", "spacer"), cancel, save);
+  msg.style.marginTop = "12px";
+  dform.append(el("h3", "", title), grid, ...(extra || []), msg, acts);
+  dform.onsubmit = async (e) => {
+    e.preventDefault(); save.disabled = true; msg.className = "msg"; msg.textContent = "Speichert …";
+    try { await onSave(); dlg.close(); await loadConfig(); refresh(); }
+    catch (err) { msg.className = "msg bad"; msg.textContent = err.message; }
+    save.disabled = false;
+  };
+  dlg.showModal();
+  return msg;
+}
+
+function send(kind, oldName, data) {
+  return oldName ? api("PUT", `/api/${kind}/${encodeURIComponent(oldName)}`, data) : api("POST", `/api/${kind}`, data);
+}
+
+function values(form) {
+  const out = {};
+  for (const e of form.elements) {
+    if (!e.name) continue;
+    out[e.name] = e.type === "checkbox" ? e.checked : e.value;
+  }
+  return out;
+}
+
+/* accounts */
+function accountForm(item) {
+  const a = item || {}, grid = el("div", "grid");
+  grid.append(
+    field("Name (nur zur Anzeige)", text("name", a.name, "z. B. ARD Sternpunkt")),
+    field("Nummer / Benutzername", text("user", a.user, "z. B. 49611234567")),
+    field("SIP-Server", text("registrar", a.registrar, "sip:sip.example.de:5060"), true, "Adresse des Servers, an dem sich die Brücke anmeldet."),
+    field("Passwort", text("password", "", a.has_password ? "unverändert lassen" : "", "password")),
+    field("Domain (falls abweichend)", text("domain", a.domain, "Standard: der Server")));
+  const more = el("details"), mg = el("div", "grid");
+  more.append(el("summary", "", "Weitere Einstellungen"));
+  mg.append(field("Login-Name (falls er von der Nummer abweicht)", text("auth_user", a.auth_user)),
+    field("Anmeldung gültig für (Sekunden)", text("expires_s", a.expires_s, "300", "number")),
+    field("Name in Anrufen an uns", text("contact_user", a.contact_user, "Standard: der Name des Kontos"), true,
+      "Daran erkennt die Brücke, für welches Konto ein Anruf kommt. Nur nötig, wenn zwei Konten dieselbe Nummer haben."));
+  more.append(mg);
+  return { grid, more };
+}
+
+/* intercom lines */
+function lineForm(item) {
+  const l = item || {}, grid = el("div", "grid");
+  const prod = el("input"), lid = el("input");
+  prod.type = lid.type = "hidden"; prod.name = "production_id"; lid.name = "line_id"; prod.value = l.production_id || ""; lid.value = l.line_id || "";
+  const chosen = el("div", "help", l.production_id ? `Gewählt: Produktion ${l.production_id} · Leitung ${l.line_id}` : "Noch keine Leitung gewählt.");
+  const picker = el("select"); picker.hidden = true;
+  const load = el("button", "", "Leitungen laden"); load.type = "button";
+  grid.append(field("Name (nur zur Anzeige)", text("name", l.name, "z. B. Regie SAW")),
+    field("Intercom-Benutzername", text("username", l.username)),
+    field("Passwort des Intercom-Accounts", text("password", "", l.has_password ? "unverändert lassen" : "", "password")),
+    field("Leitung", picker, false), prod, lid);
+  const wrap = el("div", "wide"); wrap.append(load, " ", chosen);
+  grid.append(wrap);
+  const msg = el("span", "msg");
+  load.addEventListener("click", async () => {
+    const f = values(dform);
+    load.disabled = true; msg.className = "msg"; msg.textContent = "Lädt …";
+    try {
+      const r = await api("POST", "/api/lines/discover", { username: f.username, password: f.password, name: item ? item.name : "" });
+      picker.replaceChildren();
+      const first = el("option", "", "– bitte wählen –"); first.value = ""; picker.append(first);
+      r.lines.forEach((x, i) => { const o = el("option", "", `${x.production_name}  ›  ${x.line_name}`); o.value = String(i); picker.append(o); });
+      picker.hidden = false;
+      picker.onchange = () => { const x = r.lines[Number(picker.value)]; if (x) { prod.value = x.production_id; lid.value = x.line_id; chosen.textContent = `Gewählt: ${x.production_name} › ${x.line_name}`; } };
+      msg.textContent = r.lines.length ? `${r.lines.length} Leitungen gefunden.` : "Dieser Account darf keine Leitung betreten.";
+    } catch (e) { msg.className = "msg bad"; msg.textContent = e.message; }
+    load.disabled = false;
+  });
+  wrap.append(" ", msg);
+  return grid;
+}
+
+/* call profiles */
+function profileForm(item) {
+  const c = item || {}, grid = el("div", "grid");
+  const lineOpts = [["", "– keine –"], ...config.lines.map((l) => [l.name, l.name])];
+  const accOpts = [["", "– direkt, ohne Konto –"], ...config.accounts.map((a) => [a.name, a.name])];
+  const name = text("name", c.name, "z. B. SAW Mainz");
+  const mode = select("mode", [["both", "Anrufbar, ruft auf Knopfdruck an (wie ein Hardware-Codec)"], ["answer", "Nur Anrufe annehmen"], ["dial", "Ruft von selbst an und wählt neu"]], c.mode || "both");
+  const account = select("account", accOpts, c.account || "");
+  const target = text("target", c.target ? c.target.replace(/^sip:/, "") : "", "Nummer oder Adresse");
+  const accept = text("accept_from", (c.accept_from || []).join(", "), "IP-Adressen oder Namen, getrennt durch Komma");
+  const codec = select("codec", Object.entries(CODECS).map(([k, v]) => [k, v.label]), c.codec || "mp2");
+  const rate = select("sample_rate", [[48000, "48 kHz"]], c.sample_rate || 48000);
+  const cmode = select("channel_mode", [["dual-mono", "x"]], c.channel_mode || "dual-mono");
+  const bitrate = select("bitrate_kbps", [[192, "192"]], c.bitrate_kbps || 192);
+  const fTarget = field("Ziel (Nummer oder Adresse)", target, false, "Wird angerufen, wenn das Feld auf der Statusseite leer bleibt.");
+  const fAccept = field("Anrufe annehmen von (ohne Konto)", accept, false);
+  grid.append(field("Name", name, false), field("Verhalten", mode, false), field("Konto", account, false), fTarget, fAccept);
+
+  const fRate = field("Abtastrate", rate), fMode = field("Kanäle", cmode), fBit = field("Datenrate (kbit/s)", bitrate);
+  grid.append(field("Codec", codec), fMode, fRate, fBit);
+
+  const map = el("table", "chanmap"), mbody = el("tbody");
+  map.innerHTML = "<thead><tr><th></th><th>wir senden aus Leitung</th><th>wir sprechen in Leitung</th></tr></thead>";
+  map.append(mbody);
+  const rows = ["left", "right"].map((side) => {
+    const tr = el("tr"), th = el("td", "", side === "left" ? "links" : "rechts");
+    const send = select(side + "_send", lineOpts, (c[side] || {}).send || ""), recv = select(side + "_receive", lineOpts, (c[side] || {}).receive || "");
+    const a = el("td"), b = el("td"); a.append(send); b.append(recv);
+    tr.append(th, a, b); mbody.append(tr);
+    return { tr, th, send, recv };
+  });
+  const mapWrap = el("div", "wide"); mapWrap.append(el("div", "help", "Welche Leitung gehört zu welchem Kanal? „Senden“ ist das, was die Gegenstelle hört, „sprechen“ das, was von ihr in die Leitung kommt."), map);
+  grid.append(mapWrap);
+
+  const flags = el("div", "wide"), auto = check("autostart", "Beim Start von selbst anrufen", c.autostart !== false),
+    redial = check("redial", "Nach einem Abbruch neu anrufen", c.redial !== false), keep = check("keep_lines", "Leitungen dauerhaft verbunden halten (sonst nur während eines Gesprächs)", c.keep_lines),
+    latch = check("rtp_latch", "Hinter NAT: dorthin senden, woher der Ton kommt", c.rtp_latch);
+  flags.append(auto, redial, keep, latch);
+  grid.append(flags);
+
+  const more = el("details"), mg = el("div", "grid");
+  more.append(el("summary", "", "Weitere Einstellungen"));
+  mg.append(field("Pause vor dem Neuwählen (s)", text("redial_s", c.redial_s, "10", "number")),
+    field("Auflegen, wenn so lange nichts ankommt (s, 0 = nie)", text("rtp_timeout_s", c.rtp_timeout_s, "0", "number")),
+    field("Pufferung des ankommenden Tons (ms)", text("playout_ms", c.playout_ms, "60", "number")),
+    field("Paketdauer bei G.722 / G.711 (ms)", text("ptime_ms", c.ptime_ms, "20", "number")),
+    field("Pegel in die Leitungen (dB)", text("in_gain_db", c.in_gain_db, "0", "number")),
+    field("Pegel aus den Leitungen (dB)", text("out_gain_db", c.out_gain_db, "0", "number")));
+  more.append(mg);
+
+  const sync = () => {
+    const d = CODECS[codec.value], keepMode = cmode.value, keepRate = rate.value, keepBit = bitrate.value;
+    rate.replaceChildren(...d.rates.map((r) => { const o = el("option", "", `${r / 1000} kHz`); o.value = r; return o; }));
+    rate.value = d.rates.map(String).includes(keepRate) ? keepRate : String(d.rates[0]);
+    cmode.replaceChildren(...d.modes.map((m) => { const o = el("option", "", MODE_LABEL[m]); o.value = m; return o; }));
+    cmode.value = d.modes.includes(keepMode) ? keepMode : d.modes[0];
+    const mono = cmode.value === "mono";
+    fMode.hidden = d.modes.length === 1;
+    fRate.hidden = d.rates.length === 1;
+    fBit.hidden = codec.value !== "mp2";
+    if (codec.value === "mp2") {
+      const list = d.bitrates[mono ? "mono" : "two"];
+      bitrate.replaceChildren(...list.map((b) => { const o = el("option", "", String(b)); o.value = b; return o; }));
+      bitrate.value = list.map(String).includes(keepBit) ? keepBit : String(mono ? 128 : 192);
+    }
+    rows[1].tr.hidden = mono;
+    rows[0].th.textContent = mono ? "Kanal" : "links";
+    const dialing = mode.value !== "answer", answering = mode.value !== "dial";
+    fTarget.hidden = !dialing; fAccept.hidden = !answering || !!account.value;
+    auto.hidden = redial.hidden = mode.value !== "dial";
+  };
+  codec.addEventListener("change", sync); cmode.addEventListener("change", sync); mode.addEventListener("change", sync); account.addEventListener("change", sync);
+  sync();
+  return { grid, more, collect: () => {
+    const f = values(dform);
+    for (const side of ["left", "right"]) f[side] = { send: f[side + "_send"], receive: f[side + "_receive"] };
+    if (cmode.value === "mono") f.right = {};
+    return f;
+  } };
+}
+
+function openForm(kind, item) {
+  const old = item ? item.name : null;
+  if (kind === "accounts") {
+    const f = accountForm(item);
+    const test = el("button", "", "Anmeldung testen"); test.type = "button";
+    const msg = dialog(item ? `Konto „${item.name}“` : "Neues Konto", f.grid, [f.more], () => send(kind, old, values(dform)), [test]);
+    test.addEventListener("click", async () => {
+      msg.className = "msg"; msg.textContent = "Testet …";
+      try { const r = await api("POST", "/api/accounts/test", values(dform)); msg.className = "msg " + (r.ok ? "good" : "bad"); msg.textContent = r.message; }
+      catch (e) { msg.className = "msg bad"; msg.textContent = e.message; }
+    });
+  } else if (kind === "lines") {
+    dialog(item ? `Leitung „${item.name}“` : "Neue Leitung", lineForm(item), [], () => send(kind, old, values(dform)));
+  } else {
+    const f = profileForm(item);
+    dialog(item ? `Profil „${item.name}“` : "Neues Anruf-Profil", f.grid, [f.more], () => send(kind, old, f.collect()));
+  }
+}
+
+for (const kind of ["accounts", "lines", "calls"]) $("add-" + kind).addEventListener("click", () => openForm(kind, null));
+
+loadConfig().catch((e) => note(e.message, "bad"));
 refresh();
 setInterval(refresh, 1500);
 </script>

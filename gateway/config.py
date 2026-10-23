@@ -96,7 +96,8 @@ def _opus_bitrate(value, line: str) -> int:
 
 
 def parse_config(data: Mapping, env: Mapping[str, str] | None = None,
-                 lookup_password: Callable[[str, str], str | None] | None = None) -> Config:
+                 lookup_password: Callable[[str, str], str | None] | None = None,
+                 require_lines: bool = True) -> Config:
     env = os.environ if env is None else env
 
     server = data.get("server") or {}
@@ -203,7 +204,7 @@ def parse_config(data: Mapping, env: Mapping[str, str] | None = None,
                 opus_bitrate_kbps=_opus_bitrate(raw.get("opus_bitrate_kbps", 96), name),
             )
         )
-    if not lines:
+    if not lines and require_lines:
         raise ConfigError("no enabled [[line]] configured")
 
     dbg = data.get("debug") or {}
