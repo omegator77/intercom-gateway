@@ -48,17 +48,27 @@ class LineControl:
 class SharedLineAudio:
     """The audio side of one connected line (what gateway.session.LineWorker expects), backed by the hub."""
 
-    def __init__(self, control: LineControl, hub: "AudioHub", loop: asyncio.AbstractEventLoop, playout_ms: int):
+    def __init__(self, control: LineControl, hub: "AudioHub", loop: asyncio.AbstractEventLoop, playout_ms: int,
+                 adapt_to_ms: int = 0):
         self.control = control
         self._hub = hub
         self.track = DeviceInputTrack(loop)
-        self.out_buf = MixedPlayout(target_ms=playout_ms)
+        self._last_report = 0.0
+        self.out_buf = MixedPlayout(target_ms=playout_ms, adapt_to_ms=adapt_to_ms, on_underrun=self._underrun)
         self.out_level = Level()
         self.raw_level = Level()  # what the line delivers, before its volume: is somebody speaking on it?
         self.recorder = None  # the worker may set one for diagnostics; unused here
 
     def on_remote_pcm(self, mono: np.ndarray, key: int = 0) -> None:
         self.out_buf.write(mono, key)
+
+    def _underrun(self, gap_ms: float, target_ms: float) -> None:
+        """A gap in what the line delivered (the packets came late): into the log, at most once a second."""
+        now = time.monotonic()
+        if now - self._last_report >= 1.0:
+            self._last_report = now
+            log.info("[%s] Aussetzer: %.0f ms ohne Ton aus dem Netz, Puffer jetzt %.0f ms", self.control.name, gap_ms,
+                     target_ms)
 
     async def start(self) -> None:
         self._hub.attach(self)
@@ -75,6 +85,7 @@ class SharedLineAudio:
             "talkers": self.out_buf.streams,
             "fill_ms": round(self.out_buf.fill_ms, 1),
             "ratio": round(self.out_buf.ratio, 5),
+            "target_ms": round(self.out_buf.target_ms),
             "underruns": self.out_buf.underruns,
             "overruns": self.out_buf.overruns,
             "in_dropped_samples": self.track.dropped_samples,
@@ -120,6 +131,8 @@ class AudioHub:
         self.mic_level = Level()  # what is sent (after everything)
         self.mic_raw_level = Level()  # the microphone after the level slider, before echo / noise processing
         self.proc_level = Level()  # after echo / noise processing, before the leveller
+        self.device_glitches = 0  # times the sound card reported an under- or overflow
+        self._device_logged = 0.0
         self.out_level = Level()
         self._dimmer = Dimmer(ClientDim(amount_db=0))  # off until the engine sets the configured values
         self.processing_error: str | None = None  # why the configured echo/noise processing is not running
@@ -179,6 +192,20 @@ class AudioHub:
         self.cfg = replace(self.cfg, agc_target_dbfs=target_dbfs, agc_max_gain_db=max_gain_db)
         if self._agc is not None:
             self._agc = SpeechLeveller(target_dbfs, float(max_gain_db))
+
+    def set_playout(self, target_ms: int, adapt_to_ms: int) -> None:
+        """New buffer depth (and how far it may grow) for every line that is connected now."""
+        self.cfg = replace(self.cfg, playout_ms=target_ms, playout_max_ms=adapt_to_ms)
+        for line in self._lines:
+            line.out_buf.configure(target_ms, adapt_to_ms)
+
+    def note_device_status(self, which: str, status) -> None:
+        """PortAudio tells when the sound card ran dry or overflowed. Counted, and logged at most every 5 seconds."""
+        self.device_glitches += 1
+        now = time.monotonic()
+        if now - self._device_logged >= 5.0:
+            self._device_logged = now
+            log.warning("Soundkarte (%s): %s - %d seit dem Start", which, status, self.device_glitches)
 
     def set_output_gain_db(self, db: float) -> None:
         self.cfg = replace(self.cfg, output_gain_db=float(db))
@@ -317,12 +344,16 @@ class PortAudioHub(AudioHub):
 
         def in_cb(indata, frames, time_info, status):
             try:
+                if status:
+                    self.note_device_status("Mikrofon", status)
                 self.process_mic(indata[:, cfg.input_channel])
             except Exception:
                 self._log_cb_error("microphone")
 
         def out_cb(outdata, frames, time_info, status):
             try:
+                if status:
+                    self.note_device_status("Ausgabe", status)
                 mono = self.mix_output(frames)
                 outdata.fill(0)
                 for c in out_channels:

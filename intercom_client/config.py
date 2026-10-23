@@ -35,6 +35,7 @@ class ClientAudio:
     auto_gain: bool = False  # the speech leveller (agc.py)
     agc_target_dbfs: int = -20  # level the leveller aims at, measured on speech
     agc_max_gain_db: int = 25  # the most it may add
+    playout_max_ms: int = 250  # the buffer may grow up to this after glitches (0 = never, stay at playout_ms)
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,9 @@ def parse_client_config(data: Mapping, env: Mapping[str, str] | None = None,
     playout = int(a.get("playout_ms", 60))
     if not 20 <= playout <= 500:
         raise ConfigError("[audio] playout_ms must be between 20 and 500")
+    playout_max = a.get("playout_max_ms", 250)
+    if not isinstance(playout_max, int) or isinstance(playout_max, bool) or not 0 <= playout_max <= 1000:
+        raise ConfigError("[audio] playout_max_ms must be between 0 and 1000 (0 = fixed buffer)")
     in_ch = a.get("input_channel", 0)
     if not isinstance(in_ch, int) or isinstance(in_ch, bool) or in_ch < 0:
         raise ConfigError("[audio] input_channel must be a number >= 0")
@@ -147,7 +151,8 @@ def parse_client_config(data: Mapping, env: Mapping[str, str] | None = None,
     audio = ClientAudio(backend, a.get("input_device") or None, a.get("output_device") or None, in_ch,
                         tuple(out_ch), _gain(a.get("mic_gain_db", 0.0), "[audio] mic_gain_db"),
                         _gain(a.get("output_gain_db", 0.0), "[audio] output_gain_db"), playout,
-                        bool(a.get("echo_cancellation", False)), ns, bool(a.get("auto_gain", False)), target, max_gain)
+                        bool(a.get("echo_cancellation", False)), ns, bool(a.get("auto_gain", False)), target, max_gain,
+                        playout_max)
 
     d = data.get("dim") or {}
     amount = d.get("amount_db", -14)

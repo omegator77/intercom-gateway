@@ -2,18 +2,21 @@
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 import threading
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
                                QScrollArea, QSlider, QToolButton, QVBoxLayout, QWidget)
 
 from gateway import credentials, tomlio
 from gateway.ui.style import muted
 from gateway.ui.window import STATE_TEXT, Meter, db_text, fmt_duration, people_html
 
+from .. import __version__, updates
 from ..config import ClientCfg, ConfigError, load_client_config
 from ..engine import ClientEngine
 from ..hub import make_hub
@@ -307,14 +310,56 @@ class LineCard(QFrame):
             parts.append(s["last_error"])
             bad = True
         if connected and a.get("underruns"):
-            parts.append(f"{a['underruns']} Aussetzer beim Hören")
+            parts.append(f"{a['underruns']} Aussetzer beim Hören (Puffer {a.get('target_ms', '?')} ms)")
         self.note.setText("  ·  ".join(parts))
         self.note.setVisible(bool(parts))
         self.note.setStyleSheet("color:#d0472f;" if bad else "")
 
 
+UPDATE_CHECK_EVERY_MS = 12 * 3600 * 1000
+UPDATE_FIRST_CHECK_MS = 15 * 1000
+
+
+class UpdateBar(QFrame):
+    """A strip below the toolbar that offers a newer version; hidden while there is nothing to say."""
+    install_clicked = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setStyleSheet("UpdateBar { background:#e7f3ee; border:1px solid #9bc9b6; border-radius:6px; }")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 6, 10, 6)
+        self.text = QLabel()
+        self.text.setWordWrap(True)
+        self.btn_install = QPushButton("Herunterladen und installieren")
+        self.btn_later = QPushButton("Später")
+        for b in (self.btn_install, self.btn_later):
+            b.setFocusPolicy(Qt.NoFocus)
+        row.addWidget(self.text, 1)
+        row.addWidget(self.btn_install)
+        row.addWidget(self.btn_later)
+        self.btn_install.clicked.connect(self.install_clicked)
+        self.btn_later.clicked.connect(self.hide)
+        self.hide()
+
+    def offer(self, info) -> None:
+        self.text.setText(f"<b>Neue Version {info.version}</b> ist verfügbar (installiert: {__version__}).")
+        self.text.setToolTip(info.notes or "")
+        self.btn_install.setEnabled(True)
+        self.btn_install.setText("Herunterladen und installieren")
+        self.show()
+
+    def busy(self, text: str) -> None:
+        self.text.setText(text)
+        self.btn_install.setEnabled(False)
+        self.show()
+
+
 class MainWindow(QMainWindow):
     started = Signal()  # the engine has finished starting (from its helper thread to the GUI thread)
+    update_checked = Signal(object, bool, str)  # UpdateInfo or None, asked for by hand, error text
+    update_progress = Signal(int, int)  # bytes loaded, bytes in total
+    update_loaded = Signal(str, str)  # path of the verified installer (or "" on failure), error text
 
     def __init__(self, home: Path, config_path: Path, *, enable_hotkeys: bool = True, autostart: bool = True,
                  hub_factory=make_hub) -> None:
@@ -341,7 +386,9 @@ class MainWindow(QMainWindow):
         self.btn_settings = QPushButton("Einstellungen …")
         self.btn_collapse = QPushButton("Alle einklappen")
         self.btn_collapse.setToolTip("Alle Leitungen auf eine Zeile verkleinern bzw. wieder aufklappen")
-        for b in (self.btn_connect, self.btn_mute_all, self.btn_settings, self.btn_collapse):
+        self.btn_update = QPushButton("Update suchen")
+        self.btn_update.setToolTip(f"Installiert ist Version {__version__}. Sucht auf GitHub nach einer neueren.")
+        for b in (self.btn_connect, self.btn_mute_all, self.btn_settings, self.btn_collapse, self.btn_update):
             b.setFocusPolicy(Qt.NoFocus)
         self.status = QLabel()
         muted(self.status)
@@ -349,6 +396,7 @@ class MainWindow(QMainWindow):
         bar.addWidget(self.btn_mute_all)
         bar.addWidget(self.btn_settings)
         bar.addWidget(self.btn_collapse)
+        bar.addWidget(self.btn_update)
         bar.addStretch(1)
         bar.addWidget(QLabel("Mikrofon"))
         self.mic_meter = Meter()
@@ -357,6 +405,8 @@ class MainWindow(QMainWindow):
         self.out_meter = Meter()
         bar.addWidget(self.out_meter)
         root.addLayout(bar)
+        self.update_bar = UpdateBar()
+        root.addWidget(self.update_bar)
 
         # the microphone, adjustable while the lines keep running
         mic = QHBoxLayout()
@@ -424,12 +474,118 @@ class MainWindow(QMainWindow):
         self.btn_mute_all.clicked.connect(lambda: self.engine and self.engine.set_global_mute(self.btn_mute_all.isChecked()))
         self.btn_settings.clicked.connect(self.open_settings)
         self.btn_collapse.clicked.connect(self._toggle_all_collapsed)
+        self.btn_update.clicked.connect(lambda: self.check_updates(manual=True))
+        self.update_bar.install_clicked.connect(self.download_update)
+        self.update_checked.connect(self._update_checked)
+        self.update_progress.connect(self._update_progress)
+        self.update_loaded.connect(self._update_loaded)
+        self._update_info = None
+        self._update_timer = QTimer(self)
+        self._update_timer.timeout.connect(lambda: self.check_updates(manual=False))
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(100)
         if autostart:
             QTimer.singleShot(0, self._autostart)
+            if self._updates_enabled():
+                QTimer.singleShot(UPDATE_FIRST_CHECK_MS, lambda: self.check_updates(manual=False))
+                self._update_timer.start(UPDATE_CHECK_EVERY_MS)
+
+    # -- updates
+
+    def _updates_enabled(self) -> bool:
+        """`[updates] check = false` in the config switches the automatic look-up off (the button still works)."""
+        try:
+            return bool((tomlio.load_raw(self.config_path).get("updates") or {}).get("check", True))
+        except (OSError, ValueError):
+            return True
+
+    def check_updates(self, manual: bool = False) -> None:
+        if manual:
+            self.btn_update.setEnabled(False)
+            self.btn_update.setText("Sucht …")
+
+        def work() -> None:
+            try:
+                info, error = updates.latest_release(__version__), ""
+            except updates.UpdateError as e:
+                info, error = None, str(e)
+            except Exception as e:  # never let a look-up take anything down
+                log.exception("update check failed")
+                info, error = None, f"{type(e).__name__}: {e}"
+            self.update_checked.emit(info, manual, error)
+
+        threading.Thread(target=work, daemon=True, name="update-check").start()
+
+    def _update_checked(self, info, manual: bool, error: str) -> None:
+        self.btn_update.setEnabled(True)
+        self.btn_update.setText("Update suchen")
+        if error:
+            log.info("update check: %s", error)
+            if manual:
+                QMessageBox.information(self, "Update suchen", error)
+            return
+        if info is None:
+            if manual:
+                QMessageBox.information(self, "Update suchen", f"Version {__version__} ist die neueste.")
+            return
+        self._update_info = info
+        self.update_bar.offer(info)
+
+    def download_update(self) -> None:
+        info = self._update_info
+        if info is None:
+            return
+        self.update_bar.busy(f"Lädt Version {info.version} …")
+
+        def work() -> None:
+            try:
+                path = updates.download_update(info, progress=lambda done, total: self.update_progress.emit(done, total))
+                self.update_loaded.emit(str(path), "")
+            except updates.UpdateError as e:
+                self.update_loaded.emit("", str(e))
+            except Exception as e:
+                log.exception("update download failed")
+                self.update_loaded.emit("", f"{type(e).__name__}: {e}")
+
+        threading.Thread(target=work, daemon=True, name="update-download").start()
+
+    def _update_progress(self, done: int, total: int) -> None:
+        info = self._update_info
+        if info is not None:
+            pct = f" ({100 * done // total} %)" if total else ""
+            self.update_bar.busy(f"Lädt Version {info.version} …{pct}")
+
+    def _update_loaded(self, path: str, error: str) -> None:
+        info = self._update_info
+        if error or info is None:
+            self.update_bar.offer(info) if info is not None else self.update_bar.hide()
+            QMessageBox.warning(self, "Update", error or "Das Update ist nicht mehr verfügbar.")
+            return
+        self.update_bar.offer(info)
+        answer = QMessageBox.question(
+            self, "Update installieren",
+            f"Version {info.version} ist geladen, die Signatur und die Prüfsumme stimmen.\n\n"
+            "Zum Installieren wird der Client beendet (alle Leitungen werden getrennt) und der Installer gestartet. "
+            "Jetzt installieren?")
+        if answer == QMessageBox.Yes:
+            self.install_and_quit(Path(path))
+
+    def install_and_quit(self, installer: Path) -> None:
+        """Start the verified installer and leave, so that it can replace the program files."""
+        flags = 0
+        if sys.platform == "win32":
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        try:
+            subprocess.Popen([str(installer)], close_fds=True, creationflags=flags)
+        except OSError as e:
+            QMessageBox.warning(self, "Update", f"Der Installer konnte nicht gestartet werden:\n{e}\n\nEr liegt hier: {installer}")
+            return
+        self.close()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     # -- connection
 

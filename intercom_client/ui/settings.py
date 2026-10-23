@@ -168,9 +168,26 @@ class ClientSettingsDialog(QDialog):
         self.mic_gain.setSingleStep(1.0)
         self.mic_gain.setSuffix(" dB")
         self.mic_gain.setValue(float(audio.get("mic_gain_db", 0.0)))
+        self.playout = QSpinBox()
+        self.playout.setRange(20, 500)
+        self.playout.setSingleStep(10)
+        self.playout.setSuffix(" ms")
+        self.playout.setValue(int(audio.get("playout_ms", 60)))
+        self.playout.setToolTip("Wie viel Ton der Client vorhält, bevor er ihn abspielt. Mehr = weniger Aussetzer, aber "
+                                "mehr Verzögerung.")
+        self.playout_max = QSpinBox()
+        self.playout_max.setRange(0, 1000)
+        self.playout_max.setSingleStep(10)
+        self.playout_max.setSuffix(" ms")
+        self.playout_max.setSpecialValueText("nie")
+        self.playout_max.setValue(int(audio.get("playout_max_ms", 250)))
+        self.playout_max.setToolTip("Nach einem Aussetzer wird der Puffer etwas größer, höchstens bis zu diesem Wert, und "
+                                    "schrumpft nach ruhigen Minuten wieder. „nie“ = fester Puffer.")
         fa.addRow("Mikrofon", self.mic)
         fa.addRow("Ausgang (Kopfhörer)", self.speaker)
         fa.addRow("Mikrofon-Verstärkung", self.mic_gain)
+        fa.addRow("Puffer beim Hören", self.playout)
+        fa.addRow("Puffer darf wachsen bis", self.playout_max)
 
         # -- microphone processing
         box_proc = QGroupBox("Mikrofon-Aufbereitung")
@@ -259,6 +276,15 @@ class ClientSettingsDialog(QDialog):
         muted(deck_note)
         fs.addRow("", deck_note)
 
+        # -- program
+        box_prog = QGroupBox("Programm")
+        fg = QFormLayout(box_prog)
+        self.update_check = QCheckBox("Regelmäßig auf GitHub nach einer neuen Version suchen")
+        self.update_check.setChecked(bool((raw.get("updates") or {}).get("check", True)))
+        self.update_check.setToolTip("Gefragt wird nur beim Start und danach alle zwölf Stunden, und es wird nie von selbst "
+                                     "installiert: du wirst erst gefragt. „Update suchen“ im Hauptfenster geht immer.")
+        fg.addRow("", self.update_check)
+
         self.error = QLabel()
         self.error.setStyleSheet("color:#d0472f;")
         self.error.setWordWrap(True)
@@ -272,7 +298,7 @@ class ClientSettingsDialog(QDialog):
         # the screen, and the buttons must never be out of reach.
         content = QWidget()
         lay = QVBoxLayout(content)
-        for w in (box_srv, box_lines, box_audio, box_proc, box_dim, box_keys, box_deck):
+        for w in (box_srv, box_lines, box_audio, box_proc, box_dim, box_keys, box_deck, box_prog):
             lay.addWidget(w)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -450,6 +476,11 @@ class ClientSettingsDialog(QDialog):
             else:
                 audio.pop(key, None)
         audio["mic_gain_db"] = round(self.mic_gain.value(), 1)
+        for key, value, default in (("playout_ms", self.playout.value(), 60), ("playout_max_ms", self.playout_max.value(), 250)):
+            if value == default:
+                audio.pop(key, None)
+            else:
+                audio[key] = value
         echo, noise, agc = self._current_processing()
         for key, value, default in (("echo_cancellation", echo, False), ("noise_suppression", noise, 0),
                                     ("auto_gain", agc, False)):
@@ -497,6 +528,10 @@ class ClientSettingsDialog(QDialog):
             data["dim"] = dim
         else:
             data.pop("dim", None)
+        if self.update_check.isChecked():
+            data.pop("updates", None)  # the default is not written
+        else:
+            data["updates"] = {"check": False}
         url_text = self.companion.text().strip()
         if url_text and "://" not in url_text:
             url_text = "ws://" + url_text  # "127.0.0.1:12345" is enough

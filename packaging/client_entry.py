@@ -58,6 +58,21 @@ def selftest() -> int:
         level = SpeechLeveller().process(block)
         assert len(out) == FRAME and len(level) == FRAME
 
+    def updates():
+        import base64
+
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        from intercom_client import updates as up
+
+        key = Ed25519PrivateKey.generate()
+        public = base64.b64encode(key.public_key().public_bytes(serialization.Encoding.Raw,
+                                                               serialization.PublicFormat.Raw)).decode()
+        up.verify_signature(public, b"x", base64.b64encode(key.sign(b"x")).decode())
+        up.parse_version("client-v0.1.0")
+        base64.b64decode(up.PUBLIC_KEY, validate=True)  # the built-in release key is a well-formed key
+
     def window():
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from pathlib import Path
@@ -88,6 +103,7 @@ def selftest() -> int:
                           ("audio", "audio devices (PortAudio)", audio_devices),
                           ("hotkeys", "global hotkeys", hotkeys), ("creds", "Windows credential store", credentials),
                           ("proc", "echo / noise processing and level control", processing),
+                          ("updates", "update check (signatures)", updates),
                           ("window", "window and settings dialog", window)):
         if key not in skip:
             check(name, fn)

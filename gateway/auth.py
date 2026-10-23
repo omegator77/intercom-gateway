@@ -34,6 +34,12 @@ class AuthClient:
     def invalidate(self) -> None:
         self._token = None
 
+    def invalidate_if(self, stale: str) -> None:
+        """Forget the token only if it still is `stale`: several lines notice a revoked login at the same moment, and
+        the one that logs in again must not be thrown away by the others."""
+        if self._token == stale:
+            self._token = None
+
     async def token(self) -> str:
         async with self._lock:
             if self._token is None or time.monotonic() - self._issued > TOKEN_TTL_S:

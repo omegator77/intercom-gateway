@@ -73,6 +73,37 @@ intercom-client            # Oberfläche; beim ersten Start öffnen sich die Ein
 - Test ohne Soundkarte: `backend = "synthetic"` in `[audio]`; `dev/e2e_client.py` prüft zwei Clients gegen den
   lokalen Teststack.
 
+### Updates des Clients
+
+Der Client sucht beim Start (nach 15 Sekunden) und danach alle zwölf Stunden auf GitHub nach einer neueren Version; mit
+„Update suchen“ im Hauptfenster geht es jederzeit. Gibt es eine, erscheint oben ein grüner Streifen („Neue Version … ist
+verfügbar“) mit **Herunterladen und installieren**. Es wird **nie von selbst installiert**: Erst wird geladen und geprüft,
+dann fragt der Client, ob er sich beenden und den Installer starten soll. Abschalten lässt sich die automatische Suche in
+den Einstellungen („Programm“) oder mit `[updates] check = false`.
+
+Was vor dem Installieren geprüft wird:
+
+- Die Datei `SHA256SUMS.txt` der Veröffentlichung muss eine gültige **Ed25519-Signatur** (`SHA256SUMS.txt.sig`) des
+  Release-Schlüssels tragen, dessen öffentlicher Teil im Programm steht (`PUBLIC_KEY` in `intercom_client/updates.py`). Wer nur
+  an das GitHub-Konto kommt, kann so kein eigenes Programm unterschieben.
+- Der geladene Installer muss genau die Prüfsumme aus dieser Datei haben, sonst wird er gelöscht.
+- Geladen wird nur über https von GitHubs eigenen Servern (auch Weiterleitungen werden geprüft), mit Größenbegrenzung, in einen
+  eigens angelegten Ordner.
+- Dabei erfährt GitHub die Internetadresse des Rechners, sonst wird nichts übertragen.
+
+**Eine Version veröffentlichen** (einmalig: Schlüssel anlegen):
+
+```powershell
+python dev\release_client.py keygen --out $HOME\.intercom-release\client-signing.key   # nur einmal; Schlüssel sichern!
+.\build-client.ps1                          # baut den Installer und, wenn der Schlüssel da ist, die Release-Dateien
+```
+
+`build-client.ps1` legt neben dem Installer `SHA256SUMS.txt` und `SHA256SUMS.txt.sig` an. Auf GitHub: *Releases → Draft a new
+release*, Tag `client-v<Version>` (zum Beispiel `client-v0.1.2`), die drei Dateien anhängen, veröffentlichen. Die Version im
+Tag muss zur Version im Dateinamen passen. Der **private Schlüssel** gehört nie ins Git; geht er verloren, nehmen die
+installierten Clients keine Updates mehr an und müssen einmal von Hand neu installiert werden (mit einem neuen öffentlichen
+Schlüssel im Programm).
+
 ### Installer für den Client
 
 ```powershell

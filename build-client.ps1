@@ -54,3 +54,11 @@ if (-not $iscc) {
 }
 Run "Inno Setup" { & $iscc "/DAppVersion=$version" packaging\installer_client.iss }
 Write-Host "Installer: dist\installer\intercom-client-$version-setup.exe" -ForegroundColor Green
+
+# Release files for the update check (checksum + signature), when the signing key is there
+$key = "$env:USERPROFILE\.intercom-release\client-signing.key"
+if (Test-Path $key) {
+    Run "sign the release (SHA256SUMS.txt, .sig)" { & $py dev\release_client.py sign "dist\installer\intercom-client-$version-setup.exe" --key $key }
+} else {
+    Write-Warning "No signing key at $key - no release files made (python dev\release_client.py keygen --out $key)."
+}

@@ -7,7 +7,7 @@ import asyncio
 import logging
 import time
 import zlib
-from typing import Callable
+from typing import Awaitable, Callable
 
 import httpx
 import numpy as np
@@ -77,7 +77,9 @@ class LineConnection:
         recorder=None,  # debugrec.Recorder or None
         opus: tuple[str, int] = (opus_settings.DEFAULT_MODE, opus_settings.DEFAULT_KBPS),  # (mode, kbit/s)
         stereo_rx: bool = False,  # hand on_pcm (n, 2) L/R frames instead of a mono downmix
+        refresh_token: Callable[[str], Awaitable[str]] | None = None,  # stale token -> a valid one (logs in again)
     ):
+        self._refresh_token = refresh_token
         self._stereo_rx = stereo_rx
         self.program_line: bool | None = None  # the server's "programOutputLine" flag, known after the first poll
         self._recorder = recorder
@@ -217,8 +219,23 @@ class LineConnection:
             else:
                 self._on_pcm(pcm, packet.ssrc)
 
+    async def _authed(self, method: str, url: str, **kw) -> httpx.Response:
+        """A request after the session was set up. If the server no longer accepts our login (it is revoked for every
+        client of the account as soon as anybody logs that account out), log in again once and repeat the request: the
+        media keeps flowing without a login, but the line's people list and the clean closing of the session need one."""
+        r = await self._http.request(method, url, headers=self._headers, **kw)
+        if r.status_code == 401 and self._refresh_token is not None:
+            stale = self._headers["Cookie"].partition("=")[2]
+            try:
+                self._headers = {"Cookie": f"auth_token={await self._refresh_token(stale)}"}
+            except Exception as e:  # the login itself failed: the caller sees the 401
+                log.warning("logging in again failed: %s", e)
+                return r
+            r = await self._http.request(method, url, headers=self._headers, **kw)
+        return r
+
     async def participants(self, production_id: str, line_id: str) -> list[dict]:
-        r = await self._http.get(f"{API}/production/{production_id}/line/{line_id}", headers=self._headers)
+        r = await self._authed("GET", f"{API}/production/{production_id}/line/{line_id}")
         if r.status_code != 200:
             raise SessionError(f"GET line -> HTTP {r.status_code}", r.status_code)
         data = r.json()
@@ -226,15 +243,14 @@ class LineConnection:
         return parse_participants(data, self.session_id)
 
     async def heartbeat(self) -> int:
-        r = await self._http.get(f"{API}/heartbeat/{self.session_id}", headers=self._headers)
+        r = await self._authed("GET", f"{API}/heartbeat/{self.session_id}")
         return r.status_code
 
     async def close(self) -> None:
         """Best effort and bounded: shutting down must never hang on a half-dead connection."""
         if self.session_id:
             try:
-                await asyncio.wait_for(
-                    self._http.delete(f"{API}/session/{self.session_id}", headers=self._headers), 5)
+                await asyncio.wait_for(self._authed("DELETE", f"{API}/session/{self.session_id}"), 5)
             except Exception:
                 pass  # the server expires silent sessions on its own
         try:

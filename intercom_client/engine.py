@@ -69,6 +69,7 @@ class ClientEngine:
         self._hub_factory = hub_factory
         self._hotkeys: HotkeyListener | None = None
         self._companion_task: asyncio.Task | None = None
+        self.loop_lag_max_ms = 0.0  # the longest the engine's loop has stood still (see _watch_loop_lag)
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop: asyncio.Event | None = None
@@ -124,7 +125,8 @@ class ClientEngine:
             self._auth = AuthClient(http, self.cfg.username, self.cfg.password)
 
             def factory(line_cfg: LineCfg, audio: AudioCfg, loop: asyncio.AbstractEventLoop) -> SharedLineAudio:
-                return SharedLineAudio(self.controls[line_cfg.name], hub, loop, line_cfg.playout_ms or audio.playout_ms)
+                return SharedLineAudio(self.controls[line_cfg.name], hub, loop, line_cfg.playout_ms or audio.playout_ms,
+                                       self.cfg.audio.playout_max_ms)
 
             self._factory = factory
             for line in self.cfg.lines:
@@ -134,9 +136,11 @@ class ClientEngine:
             self._start_hotkeys()
             self._notify()
             sync = asyncio.ensure_future(self._sync_program_flags())
+            lag = asyncio.ensure_future(self._watch_loop_lag())
             self._start_companion()
             await self._stop.wait()
             sync.cancel()
+            lag.cancel()
             await self._stop_companion()
         finally:
             self._closing = True
@@ -154,6 +158,21 @@ class ClientEngine:
                 await http.aclose()
             self._ready.set()
             self._notify()
+
+    async def _watch_loop_lag(self) -> None:
+        """Receiving, decoding and the line sessions all run on this loop: if it stands still for a moment, packets pile
+        up and the buffers run dry. Say so in the log, so a glitch can be told from a network problem."""
+        last, logged = time.monotonic(), 0.0
+        while True:
+            await asyncio.sleep(0.1)
+            now = time.monotonic()
+            lag_ms = (now - last - 0.1) * 1000.0
+            last = now
+            self.loop_lag_max_ms = max(self.loop_lag_max_ms, lag_ms)
+            if lag_ms > 60.0 and now - logged >= 5.0:
+                logged = now
+                log.warning("Das Programm hat %.0f ms lang nicht reagiert (der Ton aus dem Netz wurde so lange nicht "
+                            "verarbeitet)", lag_ms)
 
     async def _sync_program_flags(self) -> None:
         """The server says which line is the programme line (with the participants poll); the audio hub needs it
@@ -260,6 +279,8 @@ class ClientEngine:
         self._server = ServerCfg(new.server_url)
         self._audio_cfg = AudioCfg(new.audio.backend, new.audio.playout_ms)
         if hub:
+            if (oa.playout_ms, oa.playout_max_ms) != (na.playout_ms, na.playout_max_ms):
+                hub.set_playout(na.playout_ms, na.playout_max_ms)  # the lines in a call keep running
             hub.set_agc_params(na.agc_target_dbfs, na.agc_max_gain_db)
             hub.set_output_gain_db(na.output_gain_db)
             if new.dim != old.dim:
@@ -470,6 +491,8 @@ class ClientEngine:
             "dimmed": bool(self.hub and self.hub.dimmed),
             "dim_db": self.cfg.dim.amount_db,
             "processing": self.hub.processing if self.hub else "off",
+            "device_glitches": self.hub.device_glitches if self.hub else 0,
+            "loop_lag_max_ms": round(self.loop_lag_max_ms),
             "mic_dbfs": self.hub.mic_level.dbfs if self.hub else -120.0,
             "mic_raw_dbfs": self.hub.mic_raw_level.dbfs if self.hub else -120.0,
             "mic_proc_dbfs": self.hub.proc_level.dbfs if self.hub else -120.0,

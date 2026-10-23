@@ -119,7 +119,7 @@ class LineWorker:
                               relay_type=None if self.cfg.relay_type == "ssrc-rewrite" else self.cfg.relay_type,
                               recorder=self._recorder,
                               opus=(self.cfg.opus_mode, self.cfg.opus_bitrate_kbps),
-                              stereo_rx=self.cfg.stereo_output)
+                              stereo_rx=self.cfg.stereo_output, refresh_token=self._fresh_token)
         self.conn = conn
         try:
             try:
@@ -145,6 +145,14 @@ class LineWorker:
             if self._recorder:
                 self._recorder.finish()
                 self._recorder = None
+
+    async def _fresh_token(self, stale: str) -> str:
+        """The server revoked the login this connection was made with (the account was logged out somewhere): log in
+        again - once for all lines of the account - and use the new token from now on."""
+        self.auth.invalidate_if(stale)
+        token = await self.auth.token()
+        log.info("[%s] logged in again (the server had revoked the login)", self.cfg.name)
+        return token
 
     async def _monitor(self, conn: LineConnection) -> None:
         stop_t = asyncio.ensure_future(self._stop.wait())

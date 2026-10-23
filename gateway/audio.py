@@ -99,7 +99,7 @@ class DriftBuffer:
     """
 
     def __init__(self, sr: int = SR, target_ms: int = 60, max_ms: int = 300, capacity_s: float = 2.0,
-                 channels: int = 1):
+                 channels: int = 1, adapt_to_ms: int = 0, on_underrun=None):
         self._sr = sr
         self._cap = int(sr * capacity_s)
         self.channels = channels  # 1: samples are (n,), 2: samples are (n, 2) with L and R kept apart
@@ -108,6 +108,13 @@ class DriftBuffer:
         self._r = 0.0  # absolute (fractional) read position
         self._target = sr * target_ms / 1000.0
         self._max = sr * max_ms / 1000.0
+        # Adaptive prefetch: every glitch makes the buffer 20 ms deeper (up to `adapt_to_ms`), and two quiet minutes
+        # take it back 10 ms at a time. 0 = fixed, as it always was.
+        self._base_target = self._target
+        self._adapt_max = sr * adapt_to_ms / 1000.0 if adapt_to_ms > target_ms else 0.0
+        self._last_grow = 0.0
+        self._last_relax = time.monotonic()
+        self.on_underrun = on_underrun  # called as (gap_ms, new_target_ms) from the thread that feeds the buffer
         self._buffering = True
         self._fill_avg: float | None = None
         self._last_write = 0.0
@@ -122,10 +129,29 @@ class DriftBuffer:
         with self._lock:
             return (self._w - self._r) * 1000.0 / self._sr
 
+    @property
+    def target_ms(self) -> float:
+        return self._target * 1000.0 / self._sr
+
+    def configure(self, target_ms: int, adapt_to_ms: int = 0) -> None:
+        """Change the prefetch of a running buffer (what it has grown to is kept as far as the new limits allow)."""
+        with self._lock:
+            self._base_target = self._sr * target_ms / 1000.0
+            self._adapt_max = self._sr * adapt_to_ms / 1000.0 if adapt_to_ms > target_ms else 0.0
+            self._target = max(self._base_target, min(self._target, self._adapt_max or self._base_target))
+            self._max = max(self._max, self._target + 0.15 * self._sr)
+
+    def _grow(self) -> None:
+        if self._adapt_max:
+            self._target = min(self._adapt_max, self._target + 0.020 * self._sr)
+            self._max = max(self._max, self._target + 0.15 * self._sr)
+            self._last_grow = time.monotonic()
+
     def write(self, x: np.ndarray) -> None:
         n = len(x)
         if n == 0:
             return
+        report = None
         if self.channels == 2 and x.ndim == 1:
             x = np.stack([x, x], axis=1)  # a mono talker is centred
         elif self.channels == 1 and x.ndim == 2:
@@ -140,14 +166,26 @@ class DriftBuffer:
             if self._starved_at is not None:
                 if self._last_write - self._starved_at < 0.25:
                     self.underruns += 1
+                    self._grow()
+                    report = ((self._last_write - self._starved_at) * 1000.0, self.target_ms)
                 self._starved_at = None
             if self._w - self._r > self._max:  # consumer stalled or clock far off: jump back to target
                 self._r = self._w - self._target
                 self.overruns += 1
+        if report is not None and self.on_underrun is not None:
+            try:
+                self.on_underrun(*report)
+            except Exception:  # a failing report must never stop the sound
+                log.exception("underrun callback failed")
 
     def read(self, n: int) -> np.ndarray:
         out = np.zeros(n if self.channels == 1 else (n, self.channels), np.float32)
         with self._lock:
+            if self._adapt_max and self._target > self._base_target:
+                now = time.monotonic()
+                if now - self._last_grow > 120.0 and now - self._last_relax > 30.0:  # quiet for a while: shrink again
+                    self._target = max(self._base_target, self._target - 0.010 * self._sr)
+                    self._last_relax = now
             fill = self._w - self._r
             if self._buffering:
                 if fill < self._target:
@@ -192,8 +230,10 @@ class MixedPlayout:
     IDLE_DROP_S = 3.0
     MAX_STREAMS = 16
 
-    def __init__(self, target_ms: int = 60, channels: int = 1):
+    def __init__(self, target_ms: int = 60, channels: int = 1, adapt_to_ms: int = 0, on_underrun=None):
         self._target_ms = target_ms
+        self._adapt_to_ms = adapt_to_ms
+        self._on_underrun = on_underrun
         self._channels = channels
         self._streams: dict[int, DriftBuffer] = {}
         self._lock = threading.Lock()
@@ -207,7 +247,8 @@ class MixedPlayout:
                 if len(self._streams) >= self.MAX_STREAMS:
                     return
                 b = self._streams[key] = DriftBuffer(target_ms=self._target_ms, channels=self._channels,
-                                                     max_ms=max(300, self._target_ms + 150))
+                                                     max_ms=max(300, max(self._target_ms, self._adapt_to_ms) + 150),
+                                                     adapt_to_ms=self._adapt_to_ms, on_underrun=self._on_underrun)
         b.write(x)
 
     def read(self, n: int) -> np.ndarray:
@@ -228,6 +269,19 @@ class MixedPlayout:
     @property
     def streams(self) -> int:
         return len(self._streams)
+
+    @property
+    def target_ms(self) -> float:
+        """The deepest prefetch of any talker right now (the configured one while nobody is talking)."""
+        with self._lock:
+            return max((b.target_ms for b in self._streams.values()), default=float(self._target_ms))
+
+    def configure(self, target_ms: int, adapt_to_ms: int = 0) -> None:
+        with self._lock:
+            self._target_ms, self._adapt_to_ms = target_ms, adapt_to_ms
+            buffers = list(self._streams.values())
+        for b in buffers:
+            b.configure(target_ms, adapt_to_ms)
 
     @property
     def fill_ms(self) -> float:
