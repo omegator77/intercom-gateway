@@ -4,7 +4,8 @@ inside a Docker network next to baresip:
 
     python dev/sip_dial_probe.py sip:test@bs3:5070 --codec mp2 --seconds 10 --local-ip 172.30.0.5
 
-Left channel sends 1 kHz, right 3 kHz; what comes back is analysed per channel. Exit code 0 = call came up and
+With --registrar the probe logs in at a SIP server first (and dials / is called through it); with --answer it
+waits for a call instead of placing one. Left channel sends 1 kHz, right 3 kHz; what comes back is analysed per channel. Exit code 0 = call came up and
 audio flowed in both directions."""
 from __future__ import annotations
 
@@ -52,12 +53,21 @@ async def main(a) -> int:
             "g722": dict(codec="g722"), "pcmu": dict(codec="pcmu"), "pcma": dict(codec="pcma"),
             "l16": dict(codec="l16", channel_mode="stereo")}[a.codec]
     chans = {"left": {"line": "A"}} if spec["codec"] in ("g722", "pcmu", "pcma") else {"left": {"line": "A"}, "right": {"line": "B"}}
+    sip = {"sip_port": a.sip_port, "local_ip": a.local_ip, "rtp_port_min": 41000, "rtp_port_max": 41040}
+    if a.registrar:
+        sip["register"] = {"registrar": a.registrar, "user": a.user, "password": a.password, "domain": a.domain,
+                           "expires_s": 60}
+    call = {"name": "probe", "mode": "answer" if a.answer else "dial", "redial": False, "rtp_latch": True,
+            **spec, **chans}
+    if a.answer:
+        call["accept_from"] = [a.accept_from]
+        call["extension"] = a.user
+    else:
+        call["target"] = a.target
     cfg = parse_sip_config({
-        "server": {"url": "http://127.0.0.1:1"},
-        "sip": {"sip_port": a.sip_port, "local_ip": a.local_ip, "rtp_port_min": 41000, "rtp_port_max": 41040},
+        "server": {"url": "http://127.0.0.1:1"}, "sip": sip,
         "line": [{"name": n, "production_id": "1", "line_id": "1", "username": n, "password": "x"} for n in ("A", "B")],
-        "call": [{"name": "probe", "mode": "dial", "target": a.target, "redial": False, "rtp_latch": True,
-                  **spec, **chans}]})
+        "call": [call]})
     svc = SipService(cfg, None)
     await svc.start()
     r = svc.runners[0]
@@ -66,7 +76,7 @@ async def main(a) -> int:
     run = asyncio.ensure_future(svc.run())
     ok = False
     try:
-        end = time.monotonic() + 15
+        end = time.monotonic() + (a.wait if a.answer else 15)
         while time.monotonic() < end and r.state != CallState.CONNECTED and not run.done():
             await asyncio.sleep(0.1)
         if r.state == CallState.CONNECTED:
@@ -92,10 +102,17 @@ async def main(a) -> int:
 
 
 ap = argparse.ArgumentParser()
-ap.add_argument("target")
+ap.add_argument("target", nargs="?", default="")
 ap.add_argument("--codec", default="mp2", choices=["mp2", "g722", "pcmu", "pcma", "l16"])
 ap.add_argument("--dual", action="store_true", help="Layer II: flag the stream as dual channel instead of stereo")
 ap.add_argument("--seconds", type=float, default=8.0)
 ap.add_argument("--local-ip", default=None)
 ap.add_argument("--sip-port", type=int, default=5080)
+ap.add_argument("--registrar", help="e.g. sip:kamailio:5060")
+ap.add_argument("--user", default="bridge")
+ap.add_argument("--password", default="")
+ap.add_argument("--domain", default=None)
+ap.add_argument("--answer", action="store_true", help="wait for a call instead of placing one")
+ap.add_argument("--accept-from", default="kamailio", help="who may call (address or host name)")
+ap.add_argument("--wait", type=float, default=30.0, help="with --answer: how long to wait for the call")
 sys.exit(asyncio.run(main(ap.parse_args())))

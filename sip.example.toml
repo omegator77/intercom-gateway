@@ -11,6 +11,15 @@ sip_port = 5060             # our SIP port (UDP). 0 = any free port
 rtp_port_min = 5004         # audio goes over UDP ports in this range (even ports; EBU Tech 3326 suggests 5004)
 rtp_port_max = 5100
 
+# Optional: log in at a SIP registrar (a PBX, Kamailio, ...). Calls to targets in its domain then go through it
+# (sip:200@sip.local), and others may call us at sip:<user>@<domain> (mode = "answer", accept_from = the registrar).
+# [sip.register]
+# registrar = "sip:192.0.2.1:5060"
+# user = "bridge"
+# domain = "sip.local"                  # default: the registrar's host
+# password_env = "SIP_PASSWORD"
+# expires_s = 300
+
 # Every line a call uses needs its OWN account (role participant in that production), like the gateway.
 # The account's alias / display name is what the people on the line see.
 [[line]]

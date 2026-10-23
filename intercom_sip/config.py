@@ -4,6 +4,7 @@ The `[server]` and `[[line]]` tables are the gateway's own (accounts, passwords,
 code; sound card settings do not exist here. A `[[call]]` ties one SIP call to up to two lines per direction."""
 from __future__ import annotations
 
+import dataclasses
 import os
 import tomllib
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from typing import Callable, Mapping
 from gateway.config import AudioCfg, ConfigError, DebugCfg, LineCfg, ServerCfg, parse_config
 
 from .codecs import AudioFormat, CODECS, CodecError, MODES, validate_format
+from .registration import RegisterCfg
 from .sip import SipError, parse_uri
 
 __all__ = ["ConfigError", "SipCfg", "ChannelCfg", "CallCfg", "SipConfig", "parse_sip_config", "load_sip_config"]
@@ -25,8 +27,9 @@ class SipCfg:
     bind_ip: str = "0.0.0.0"
     rtp_port_min: int = 5004  # EBU Tech 3326 suggests 5004 / 5005
     rtp_port_max: int = 5100
-    user: str = "intercom"  # user part of our SIP address
+    user: str = "intercom"  # user part of our SIP address (without a registration)
     display_name: str = "Open Intercom"
+    register: RegisterCfg | None = None  # optional: log in at a SIP registrar (see [sip.register])
 
 
 @dataclass(frozen=True)
@@ -42,7 +45,8 @@ class CallCfg:
     fmt: AudioFormat
     channels: tuple[ChannelCfg, ...]  # one per channel of the codec: left, right
     target: str | None = None
-    accept_from: tuple[str, ...] = ()
+    accept_from: tuple[str, ...] = ()  # IP addresses (or host names, looked up on every call) allowed to call us
+    extension: str | None = None  # answering: only calls to this called user (when several answering calls share a registrar)
     auth_user: str | None = None
     auth_password: str = ""
     redial: bool = True
@@ -124,6 +128,29 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
     )
     if sip.rtp_port_max < sip.rtp_port_min + 1:
         raise ConfigError("[sip] rtp_port_max must be above rtp_port_min")
+    reg_raw = sip_raw.get("register")
+    if reg_raw:
+        where = "[sip.register]"
+        for key in ("registrar", "user"):
+            if not reg_raw.get(key):
+                raise ConfigError(f"{where}: {key} is required")
+        password = ""
+        if reg_raw.get("password_env"):
+            var = str(reg_raw["password_env"])
+            if not env.get(var):
+                raise ConfigError(f"{where}: environment variable {var} is not set")
+            password = env[var]
+        elif reg_raw.get("password"):
+            password = str(reg_raw["password"])
+        try:
+            parse_uri(str(reg_raw["registrar"]))
+        except SipError as e:
+            raise ConfigError(f"{where}: {e.reason}") from None
+        sip = dataclasses.replace(sip, user=str(reg_raw["user"]), register=RegisterCfg(
+            registrar=str(reg_raw["registrar"]), user=str(reg_raw["user"]), password=password,
+            domain=str(reg_raw["domain"]) if reg_raw.get("domain") else None,
+            auth_user=str(reg_raw["auth_user"]) if reg_raw.get("auth_user") else None,
+            expires_s=int(_num(reg_raw, "expires_s", 300, 60, 3600, where))))
 
     calls: list[CallCfg] = []
     names: set[str] = set()
@@ -206,6 +233,7 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
 
         calls.append(CallCfg(
             name=name, mode=mode, fmt=fmt, channels=chans, target=target, accept_from=tuple(accept),
+            extension=str(raw["extension"]) if raw.get("extension") else None,
             auth_user=str(raw["auth_user"]) if raw.get("auth_user") else None, auth_password=password,
             redial=bool(raw.get("redial", True)), redial_s=_num(raw, "redial_s", 10.0, 1, 3600, where),
             rtp_timeout_s=_rtp_timeout(raw, where), keep_lines=bool(raw.get("keep_lines", False)),

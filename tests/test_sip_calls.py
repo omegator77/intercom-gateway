@@ -320,3 +320,101 @@ def test_audio_from_an_address_the_sdp_did_not_name_is_ignored_unless_latching_i
     assert ignored["rx_packets"] == 0 and ignored["rx_other_source"] > 20
     latched = asyncio.run(go(True))
     assert latched["rx_packets"] > 20 and latched["rx_other_source"] == 0
+
+
+# ---------------------------------------------------------------- registration
+
+class FakeRegistrar(asyncio.DatagramProtocol):
+    """Registers whoever logs in with the right digest credentials; remembers what it saw."""
+
+    def __init__(self, user, password):
+        self.user, self.password = user, password
+        self.bindings: dict[str, int] = {}  # user -> granted expiry
+        self.requests: list = []
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, addr):
+        from intercom_sip.sip import digest_authorization, parse_challenge, parse_message
+        m = parse_message(data)
+        if m is None or m.method != "REGISTER":
+            return
+        self.requests.append(m)
+        head = "SIP/2.0 {code}\r\nVia: {via}\r\nFrom: {f}\r\nTo: {t};tag=reg\r\nCall-ID: {c}\r\nCSeq: {q}\r\n"
+        auth = m.get("authorization")
+        if not auth:
+            out = (head + 'WWW-Authenticate: Digest realm="sip.local", nonce="n0nce", qop="auth"\r\n'
+                   "Content-Length: 0\r\n\r\n").format(code="401 Unauthorized", via=m.get("via"), f=m.get("from"),
+                                                       t=m.get("to"), c=m.call_id, q=m.get("cseq"))
+        else:
+            cnonce = auth.split('cnonce="')[1].split('"')[0]
+            good = digest_authorization(parse_challenge('realm="sip.local", nonce="n0nce", qop="auth"'), self.user,
+                                        self.password, "REGISTER", m.uri, cnonce=cnonce)
+            if good != auth:
+                out = (head + "Content-Length: 0\r\n\r\n").format(code="403 Forbidden", via=m.get("via"), f=m.get("from"),
+                                                                  t=m.get("to"), c=m.call_id, q=m.get("cseq"))
+            else:
+                import re
+                expires = int(re.search(r"expires=(\d+)", m.get("contact")).group(1))
+                granted = min(expires, 120) if expires else 0
+                if granted:
+                    self.bindings[self.user] = granted
+                else:
+                    self.bindings.pop(self.user, None)
+                out = (head + "Contact: {ct};expires={g}\r\nContent-Length: 0\r\n\r\n").format(
+                    code="200 OK", via=m.get("via"), f=m.get("from"), t=m.get("to"), c=m.call_id, q=m.get("cseq"),
+                    ct=m.get("contact").split(";")[0], g=granted)
+        self.transport.sendto(out.encode(), addr)
+
+
+def test_registering_with_a_password_keeps_the_binding_and_removes_it_on_stop():
+    from intercom_sip.registration import RegisterCfg, Registration
+    from intercom_sip.sip import SipEndpoint
+
+    async def go(password):
+        loop = asyncio.get_running_loop()
+        srv = FakeRegistrar("bridge", "secret")
+        transport, _ = await loop.create_datagram_endpoint(lambda: srv, local_addr=("127.0.0.1", 0))
+        port = transport.get_extra_info("sockname")[1]
+        ua = SipEndpoint(port=0, advertise_ip="127.0.0.1", bind_ip="127.0.0.1")
+        await ua.start()
+        reg = Registration(ua, RegisterCfg(f"sip:127.0.0.1:{port}", "bridge", password, "sip.local", expires_s=300))
+        task = asyncio.ensure_future(reg.run())
+        try:
+            if password == "secret":
+                assert await wait_for(lambda: reg.state == "registered")
+                assert srv.bindings == {"bridge": 120} and reg.granted_s == 120  # the registrar shortened it
+                assert reg.address == "sip:bridge@sip.local"
+                first_call_ids = {r.call_id for r in srv.requests}
+                assert len(first_call_ids) == 1
+                reg.stop()
+                await asyncio.wait_for(task, 10)
+                assert srv.bindings == {} and reg.state == "stopped"  # removed again (expires=0)
+            else:
+                assert await wait_for(lambda: reg.last_error is not None)
+                assert reg.state == "failed" and "403" in reg.last_error and srv.bindings == {}
+                reg.stop()
+                await asyncio.wait_for(task, 10)
+        finally:
+            reg.stop()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await ua.close()
+            transport.close()
+
+    asyncio.run(go("secret"))
+    asyncio.run(go("wrong"))
+
+
+def test_config_reads_the_registration_and_hostnames_in_accept_from():
+    cfg = parse_sip_config({
+        "server": {"url": "http://x"}, "line": [line("L1", 1)],
+        "sip": {"register": {"registrar": "sip:kamailio:5060", "user": "bridge", "password": "pw", "domain": "sip.local"}},
+        "call": [{"name": "A", "mode": "answer", "accept_from": "kamailio", "extension": "bridge",
+                  "left": {"line": "L1"}}]}, lookup_password=PW)
+    assert cfg.sip.register.registrar == "sip:kamailio:5060" and cfg.sip.register.domain == "sip.local"
+    assert cfg.sip.user == "bridge" and cfg.calls[0].accept_from == ("kamailio",) and cfg.calls[0].extension == "bridge"
+    with pytest.raises(ConfigError, match="registrar is required"):
+        parse_sip_config({"server": {"url": "http://x"}, "line": [line("L1", 1)], "sip": {"register": {"user": "x"}},
+                          "call": [{"name": "A", "target": "sip:x@h", "left": {"line": "L1"}}]}, lookup_password=PW)

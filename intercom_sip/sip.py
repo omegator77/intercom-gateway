@@ -3,7 +3,7 @@
 Deliberately narrow - what two broadcast codecs or a PBX need to bring a call up and down:
   * outgoing INVITE with retransmissions, provisional responses, digest authentication, CANCEL, ACK, BYE
   * incoming INVITE (answered by a callback), CANCEL, BYE, OPTIONS, re-INVITE of the same codec
-Not included: registration, TCP/TLS, SRTP, forking, early media, transfers. Everything runs on the caller's
+Not included here: TCP/TLS, SRTP, forking, early media, transfers (registration lives in registration.py). Everything runs on the caller's
 asyncio loop; there are no threads.
 """
 from __future__ import annotations
@@ -210,6 +210,13 @@ def bare_uri(header: str | None, fallback: str = "") -> str:
     return m.group(1) if m else fallback
 
 
+def _user_of(header: str | None) -> str:
+    try:
+        return parse_uri(bare_uri(header)).user or ""
+    except SipError:
+        return ""
+
+
 def new_branch() -> str:
     return "z9hG4bK" + secrets.token_hex(8)
 
@@ -324,6 +331,7 @@ class IncomingCall:
     from_uri: str
     remote_ip: str
     sdp: str  # the caller's offer
+    to_user: str = ""  # the extension that was called (user part of the To header)
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
 
 
@@ -520,14 +528,16 @@ class SipEndpoint(asyncio.DatagramProtocol):
 
     async def invite(self, target: str, sdp: str, *, auth: tuple[str, str] | None = None,
                      progress: Callable[[int, str], None] | None = None, ring_timeout: float = 90.0,
-                     caller: str | None = None) -> Dialog:
-        """Call `target`; returns the dialog once the call is established and acknowledged."""
+                     caller: str | None = None, domain: str | None = None, proxy: str | None = None) -> Dialog:
+        """Call `target`; returns the dialog once the call is established and acknowledged. With `proxy` the
+        request goes to that server (an outbound proxy / registrar) while the Request-URI stays `target`."""
         uri = parse_uri(target)
-        addr = await self.resolve(uri.host, uri.port)
+        hop = parse_uri(proxy) if proxy else uri
+        addr = await self.resolve(hop.host, hop.port)
         ip = self.local_ip_for(addr)
         call_id = f"{secrets.token_hex(8)}@{ip}"
         from_tag = new_tag()
-        local_uri = f"sip:{caller or self.user}@{ip}"
+        local_uri = f"sip:{caller or self.user}@{domain or ip}"  # behind a registrar the identity is user@domain
         cseq = 1
         challenge_done = False
         authorization: tuple[str, str] | None = None
@@ -676,7 +686,8 @@ class SipEndpoint(asyncio.DatagramProtocol):
     async def _handle_invite(self, req: SipMessage, addr: tuple[str, int]) -> None:
         call_id = req.call_id
         offer = req.body.decode("utf-8", errors="replace")
-        incoming = IncomingCall(call_id, req.get("from") or "", addr[0], offer)
+        incoming = IncomingCall(call_id, req.get("from") or "", addr[0], offer,
+                                to_user=_user_of(req.get("to")))
         self._incoming[call_id] = incoming
         to_tag = new_tag()
         try:

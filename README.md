@@ -124,7 +124,11 @@ intercom-sip run -c sip.toml
 - **Sicherheit:** Audio wird nur von der Adresse angenommen, die das SDP nennt (hinter NAT `rtp_latch = true`). Angerufen wird
   nur von `accept_from`. SIP ist unverschlüsselt (UDP); die Ports (SIP und der RTP-Bereich) gehören in eine Firewall mit
   Freigabe nur für die Gegenstellen.
-- **Bewusst nicht enthalten (Stand jetzt):** Registrierung an einem SIP-Server, TCP/TLS/SRTP, RTCP, DTMF, Weiterleitung.
+- **Registrierung (optional, `[sip.register]`):** Die Brücke meldet sich mit Benutzer und Passwort an einem SIP-Server an,
+  erneuert die Anmeldung rechtzeitig und meldet sich beim Beenden ab. Ziele in der Domain des Servers (`sip:200@sip.local`)
+  werden über ihn angerufen, Anrufe an `sip:<benutzer>@<domain>` nehmen Anruf-Profile mit `mode = "answer"` an (`accept_from`
+  darf auch ein Hostname sein, `extension` wählt die gerufene Nebenstelle).
+- **Bewusst nicht enthalten (Stand jetzt):** TCP/TLS/SRTP, RTCP, DTMF, Weiterleitung.
 
 **Geprüft:** Alles unter `tests/test_sip_*.py` (Codecs, RTP, SDP, SIP-Nachrichten, Anruf gegen sich selbst, Kanalzuordnung wie
 oben, Konfiguration). Dazu gegen den lokalen Intercom-Teststack (`dev/e2e_sip.py`: echte Leitungen über den Media-Bridge) und
@@ -132,6 +136,24 @@ gegen **baresip** als unabhängige SIP-/RTP-Implementierung mit Layer-II-Modul (
 Anrufe in beide Richtungen mit Layer II (dual-mono kommt mit sauber getrennten Kanälen an), G.722 und G.711. **Nicht geprüft** ist
 der Betrieb mit echten Rundfunk-Codecs (Luci, Mayah, Prontonet u. a.): deren SDP-Eigenheiten (z. B. Parameter hinter `a=fmtp`)
 zeigt erst ein echter Anruf.
+
+### Lokaler SIP-Testserver (Kamailio)
+
+Unter `dev/sipserver/` liegt ein Kamailio als Anmelde- und Vermittlungsserver für Tests, dazu eine kleine Verwaltungsseite.
+Er vermittelt nur die Anrufe, der Ton läuft direkt zwischen den Geräten. Er ist **nicht für das Internet gedacht** (keine
+Flutbegrenzung, kein TLS) und nur an `127.0.0.1` erreichbar.
+
+```powershell
+cd dev\sipserver
+mkdir data; copy users.example.cfg data\users.cfg
+docker compose up -d --build
+```
+
+- Verwaltungsseite: <http://127.0.0.1:8099> (wer angemeldet ist, laufende Gespräche, Benutzer anlegen und löschen)
+- Kamailios eigene Befehlsseite: <http://127.0.0.1:18080/RPC>
+- SIP: `127.0.0.1:5060` (UDP), Realm und Domain `sip.local`, Anmeldung mit Passwort. Beispielbenutzer stehen in `users.example.cfg`.
+- Tote Gespräche (ein Gerät verschwindet ohne Auflegen) erkennt der Server selbst an Rückfragen alle 30 Sekunden.
+- Aufräumen: `docker compose down`
 
 ## Installation (Entwicklungsstand)
 

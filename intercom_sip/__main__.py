@@ -15,6 +15,7 @@ from gateway.http import create_client
 from . import __version__
 from .calls import SipService
 from .config import ConfigError, SipConfig, load_sip_config
+from .registration import Registration
 from .sip import SipEndpoint, SipError, parse_uri
 
 log = logging.getLogger("sip")
@@ -43,6 +44,15 @@ async def cmd_check(cfg: SipConfig) -> int:
     ua = SipEndpoint(0, cfg.sip.user, cfg.sip.display_name, cfg.sip.local_ip, cfg.sip.bind_ip)
     await ua.start()
     try:
+        if cfg.sip.register:
+            reg = Registration(ua, cfg.sip.register)
+            try:
+                await reg.register(60)
+                await reg.register(0)
+                print(f"\nregistration: {reg.address} at {cfg.sip.register.registrar} OK (registered and removed again)")
+            except (SipError, OSError) as e:
+                print(f"\nregistration: {reg.address} at {cfg.sip.register.registrar} ERROR {e}")
+                ok = False
         for call in cfg.calls:
             f = call.fmt
             print(f"\ncall {call.name!r} ({call.mode}): {f.describe()}"
@@ -105,6 +115,10 @@ async def cmd_run(cfg: SipConfig, status_every: float, seconds: float | None) ->
     async def report():
         while True:
             await asyncio.sleep(status_every)
+            reg = service.status()["registration"]
+            if reg:
+                log.info("registration %s: %s%s", reg["address"], reg["state"],
+                         f" ({reg['last_error']})" if reg["last_error"] else "")
             for s in service.status()["calls"]:
                 m = s["media"] or {}
                 log.info("[%s] %s%s%s%s", s["call"], s["state"],

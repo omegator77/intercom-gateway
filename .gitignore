@@ -13,3 +13,4 @@ dev/.state/
 *.egg-info/
 build/
 dist/
+dev/sipserver/data/

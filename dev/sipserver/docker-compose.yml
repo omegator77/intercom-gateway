@@ -1,0 +1,32 @@
+# Local SIP registrar for tests (Kamailio, signalling only) and a small admin page.
+#   docker compose up -d --build        then   http://127.0.0.1:8099  (admin page),  http://127.0.0.1:18080/RPC  (Kamailio's own page)
+#   docker compose down
+# Only reachable from this PC (127.0.0.1). Devices on the LAN need the ports published on the LAN address instead.
+services:
+  kamailio:
+    build: .
+    image: kam-test
+    container_name: sipserver-kamailio
+    volumes:
+      - ./kamailio.cfg:/etc/kamailio/kamailio.cfg:ro
+      - ./data:/etc/kamailio/data:ro
+    ports:
+      - "127.0.0.1:5060:5060/udp"
+      - "127.0.0.1:18080:8080/tcp"
+    restart: unless-stopped
+
+  admin:
+    image: python:3.12-slim
+    container_name: sipserver-admin
+    command: ["python", "/app/admin.py"]
+    volumes:
+      - ./admin.py:/app/admin.py:ro
+      - ./data:/data
+    environment:
+      RPC_URL: http://kamailio:8080/jsonrpc
+      USERS_FILE: /data/users.cfg
+    ports:
+      - "127.0.0.1:8099:8099"
+    depends_on:
+      - kamailio
+    restart: unless-stopped
