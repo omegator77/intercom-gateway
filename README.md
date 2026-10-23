@@ -130,6 +130,16 @@ intercom-sip run -c sip.toml
   des Servers, ankommend nimmt es Anrufe an, die für dieses Konto eintreffen (nur vom Server des Kontos, weitere Adressen
   über `accept_from`). Ohne Konto geht ein Anruf direkt an eine Adresse. Die Anmeldung wird rechtzeitig erneuert und beim
   Beenden entfernt; `intercom-sip check` probiert jede Anmeldung aus.
+- **Statusseite mit Anrufen und Auflegen:** Die Brücke bringt eine eigene Seite mit (`http://127.0.0.1:8088`, Abschnitt `[web]`).
+  Sie zeigt die Konten mit Anmeldestatus und pro Anruf-Profil: Zustand, Gegenstelle und Richtung, Dauer, Codec, Pegel je Kanal
+  (gesendet und empfangen), Pakete, Verluste, Puffer, die verbundenen Leitungen und wer sonst darin ist. Mit **Anrufen**
+  (Rufnummer eintippen oder leer lassen für das Ziel des Profils) und **Auflegen** wird der Anruf von Hand gesteuert.
+  Standardmäßig erreicht nur dieser Rechner die Seite; für andere Adressen ist ein Passwort Pflicht (`password_env`,
+  Browser-Abfrage, danach ein Cookie). Schaltflächen von fremden Webseiten aus werden abgewiesen.
+- **Anruf-Profile (`mode`):** `dial` ruft von selbst an und wählt neu (`autostart = false`: erst auf Knopfdruck). Nach
+  **Auflegen** wählt es nicht mehr von selbst, bis jemand wieder auf Anrufen drückt. `answer` wartet nur auf Anrufe.
+  `both` wartet angemeldet auf Anrufe und ruft nur auf Knopfdruck an, so wie ein Hardware-Codec; dieselben Leitungen
+  dienen dann in beide Richtungen.
 - **Bewusst nicht enthalten (Stand jetzt):** TCP/TLS/SRTP, RTCP, DTMF, Weiterleitung.
 
 **Geprüft:** Alles unter `tests/test_sip_*.py` (Codecs, RTP, SDP, SIP-Nachrichten, Anruf gegen sich selbst, Kanalzuordnung wie

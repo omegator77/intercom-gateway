@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SIP-Brücke</title>
+<style>
+  :root {
+    --bg: #f2f4f3; --panel: #ffffff; --ink: #17201e; --muted: #5a6864; --line: #dce2df; --field: #f6f8f7;
+    --accent: #0a6b5c; --accent-ink: #ffffff; --accent-soft: #d6efe9;
+    --ok: #17703f; --ok-bg: #d9f1e3; --warn: #8f5500; --warn-bg: #fbebcb; --bad: #a3261d; --bad-bg: #f8dcd8;
+    --off: #5f6c68; --off-bg: #e6ebe9; --meter-bg: #e3e8e6; --meter: #12907b; --meter-hot: #d98a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101614; --panel: #19211f; --ink: #e5ece8; --muted: #92a19b; --line: #2b3733; --field: #131a18;
+      --accent: #45c1a7; --accent-ink: #07201a; --accent-soft: #1b3a33;
+      --ok: #6fd9a0; --ok-bg: #173a2a; --warn: #f0b95a; --warn-bg: #3a2c12; --bad: #ff8d84; --bad-bg: #402220;
+      --off: #93a29c; --off-bg: #25302c; --meter-bg: #26312e; --meter: #45c1a7; --meter-hot: #f0b95a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 1080px; margin: 0 auto; padding: 24px 16px 56px; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+  header.top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 24px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  h3 { font-size: 17px; margin: 0; }
+  .meta, .sub { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  section, article { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .calls { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
+  article header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; }
+  .peer { margin: 8px 0 2px; font-variant-numeric: tabular-nums; min-height: 22px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 13px; padding: 4px 12px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { padding: 7px 12px 7px 0; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tr:last-child td { border-bottom: 0; }
+  .empty { color: var(--muted); }
+  .pill { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+  .ok { background: var(--ok-bg); color: var(--ok); }
+  .warn { background: var(--warn-bg); color: var(--warn); }
+  .bad { background: var(--bad-bg); color: var(--bad); }
+  .off { background: var(--off-bg); color: var(--off); }
+  .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; }
+  .meter { display: flex; align-items: center; gap: 8px; min-width: 150px; }
+  .meter .bar { flex: 1; height: 8px; border-radius: 4px; background: var(--meter-bg); overflow: hidden; }
+  .meter .fill { height: 100%; width: 0; background: var(--meter); border-radius: 4px; }
+  .meter .fill.hot { background: var(--meter-hot); }
+  .meter .db { width: 46px; text-align: right; color: var(--muted); font-size: 12.5px; }
+  .stats { margin-top: 10px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .stats b { color: var(--ink); font-weight: 600; }
+  .lines { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .chip { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13px; background: var(--field); }
+  .chip .who { color: var(--muted); display: block; margin-top: 2px; }
+  .err { margin-top: 10px; padding: 8px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); font-size: 14px; }
+  .err[hidden] { display: none; }
+  form.controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; align-items: center; padding-top: 14px; border-top: 1px solid var(--line); }
+  input { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--field); color: var(--ink); min-width: 230px; flex: 1 1 230px; max-width: 360px; }
+  button { font: inherit; padding: 8px 18px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; font-weight: 600; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.danger { color: var(--bad); border-color: var(--bad); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .msg { font-size: 13px; color: var(--muted); }
+  .msg.bad { color: var(--bad); }
+  .banner { padding: 10px 14px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); }
+  .banner[hidden] { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <h1>SIP-Brücke</h1>
+    <div class="meta" id="meta">…</div>
+  </header>
+  <div class="banner" id="banner" hidden></div>
+
+  <section>
+    <h2>Konten</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Konto</th><th>Adresse</th><th>Anmeldung</th></tr></thead>
+      <tbody id="accounts"></tbody>
+    </table></div>
+  </section>
+
+  <div class="calls" id="calls"></div>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+const clock = (s) => { const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; const p = (n) => String(n).padStart(2, "0"); return h ? `${h}:${p(m)}:${p(x)}` : `${p(m)}:${p(x)}`; };
+const STATE = {
+  connected: ["verbunden", "ok"], dialing: ["wählt …", "warn"], ringing: ["klingelt", "warn"],
+  waiting: ["wartet auf Anruf", "off"], backoff: ["wählt gleich erneut", "warn"], idle: ["bereit", "off"], stopped: ["beendet", "off"],
+};
+const REG = { registered: ["angemeldet", "ok"], failed: ["Fehler", "bad"], idle: ["meldet an …", "warn"], stopped: ["abgemeldet", "off"] };
+const LINE = { connected: ["verbunden", "ok"], connecting: ["verbindet …", "warn"], login: ["meldet an …", "warn"], backoff: ["neuer Versuch", "warn"], idle: ["–", "off"], stopped: ["–", "off"] };
+const cards = new Map();
+
+function pill(node, [text, kind]) { node.textContent = text; node.className = "pill " + kind; }
+
+function meter(db) {
+  const wrap = el("div", "meter"), bar = el("div", "bar"), fill = el("div", "fill"), num = el("span", "db", "–");
+  bar.append(fill); wrap.append(bar, num);
+  wrap.set = (v) => {
+    if (v === null || v === undefined) { fill.style.width = "0"; num.textContent = "–"; return; }
+    const pct = Math.max(0, Math.min(100, ((v + 60) / 60) * 100));
+    fill.style.width = pct + "%"; fill.classList.toggle("hot", v > -6);
+    num.textContent = v <= -100 ? "−∞" : v.toFixed(0).replace("-", "−");
+  };
+  return wrap;
+}
+
+function makeCard(c) {
+  const root = el("article");
+  const head = el("header"), title = el("div"), name = el("h3", "", c.call), sub = el("div", "sub"), st = el("span", "pill");
+  title.append(name, sub); head.append(title, st);
+  const peer = el("div", "peer");
+  const wrap = el("div", "table-wrap"), table = el("table");
+  table.innerHTML = "<thead><tr><th>Kanal</th><th>wir senden aus Leitung</th><th>wir sprechen in Leitung</th><th>Pegel gesendet (dBFS)</th><th>Pegel empfangen (dBFS)</th></tr></thead>";
+  const body = el("tbody"); table.append(body); wrap.append(table);
+  const rows = c.channels.map((ch, i) => {
+    const tr = el("tr"), tx = meter(), rx = meter();
+    const a = el("td", "", c.channels.length === 1 ? "mono" : (i === 0 ? "links" : "rechts")), s = el("td", "", ch.send || "–"), r = el("td", "", ch.receive || "–");
+    const t = el("td"), u = el("td"); t.append(tx); u.append(rx);
+    tr.append(a, s, r, t, u); body.append(tr);
+    return { tx, rx };
+  });
+  const stats = el("div", "stats"), lines = el("div", "lines"), err = el("div", "err"); err.hidden = true;
+  const form = el("form", "controls"), input = el("input"), dial = el("button", "primary", "Anrufen"), hang = el("button", "danger", "Auflegen"), msg = el("span", "msg");
+  input.type = "text"; input.autocomplete = "off"; input.setAttribute("aria-label", "Rufnummer");
+  dial.type = "submit"; hang.type = "button";
+  form.append(input, dial, hang, msg);
+  root.append(head, peer, wrap, stats, lines, err, form);
+
+  const post = async (what, body) => {
+    msg.className = "msg"; msg.textContent = "…";
+    try {
+      const r = await fetch(`/api/calls/${c.id}/${what}`, { method: "POST", headers: { "X-Requested-With": "intercom-sip", "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+      const j = await r.json();
+      msg.className = "msg" + (r.ok ? "" : " bad");
+      msg.textContent = r.ok ? (what === "dial" ? "Wählt …" : "Aufgelegt.") : j.error;
+    } catch (e) { msg.className = "msg bad"; msg.textContent = "Keine Verbindung zur Brücke."; }
+    setTimeout(() => { msg.textContent = ""; }, 5000);
+    refresh();
+  };
+  form.addEventListener("submit", (e) => { e.preventDefault(); post("dial", { number: input.value.trim() }); });
+  hang.addEventListener("click", () => post("hangup"));
+  return { root, sub, st, peer, rows, stats, lines, err, input, dial, hang, kind: c.channels.length };
+}
+
+function statLine(parts) {
+  const f = document.createDocumentFragment();
+  parts.forEach(([k, v], i) => { if (i) f.append(" · "); f.append(k + " "); f.append(el("b", "", String(v))); });
+  return f;
+}
+
+function updateCard(card, c) {
+  const kind = c.state === "idle" && c.paused ? ["pausiert", "off"] : (STATE[c.state] || [c.state, "off"]);
+  pill(card.st, kind);
+  card.sub.textContent = [c.account ? `Konto ${c.account}` : "direkt", { dial: "ruft an", answer: "nimmt Anrufe an", both: "nimmt an, ruft auf Wunsch an" }[c.mode], c.wanted].join(" · ");
+  card.peer.textContent = c.state === "connected"
+    ? `${c.direction === "in" ? "Eingehend von" : "Ausgehend zu"} ${c.peer || "?"} · seit ${clock(c.uptime_s)}`
+    : (c.state === "waiting" ? "Bereit, angemeldet für Anrufe." : "");
+  const m = c.media;
+  card.rows.forEach((r, i) => { r.tx.set(m ? m.tx_dbfs[i] : null); r.rx.set(m ? m.rx_dbfs[i] : null); });
+  card.stats.replaceChildren();
+  if (m) {
+    card.stats.append(statLine([["Codec", m.codec], ["gesendet", m.tx_packets + " Pakete"], ["empfangen", m.rx_packets + " Pakete"],
+      ["verloren", m.rx_lost], ["Puffer", m.rx_fill_ms + " ms"], ["Aussetzer", m.rx_underruns], ["Gegenstelle", m.remote]]));
+  }
+  card.lines.replaceChildren();
+  for (const [name, l] of Object.entries(c.lines)) {
+    const chip = el("div", "chip"), top = el("div"), p = el("span", "pill");
+    pill(p, LINE[l.state] || [l.state, "off"]);
+    top.append(`${name} `, p, ` ${l.listens && l.talks ? "hört und spricht" : l.listens ? "wird abgehört" : "wird besprochen"}`);
+    const who = el("span", "who", l.participants === null ? "Teilnehmer unbekannt" : (l.participants.length ? "außerdem: " + l.participants.map((x) => x.name).join(", ") : "sonst niemand in der Leitung"));
+    chip.append(top, who); card.lines.append(chip);
+  }
+  const err = c.last_error;
+  card.err.hidden = !err || c.state === "connected";
+  card.err.textContent = err ? "Letzter Fehler: " + err : "";
+  card.input.placeholder = c.target ? `Rufnummer (leer = ${c.target.replace(/^sip:/, "")})` : "Rufnummer oder SIP-Adresse";
+  card.input.hidden = !(c.mode === "dial" || c.mode === "both");
+  card.dial.hidden = card.input.hidden;
+  card.dial.disabled = !c.can_dial;
+  card.hang.disabled = !c.can_hangup;
+  card.hang.hidden = false;
+}
+
+function render(s) {
+  $("banner").hidden = true;
+  const h = Math.floor(s.uptime_s / 3600), m = Math.floor((s.uptime_s % 3600) / 60);
+  $("meta").textContent = `Version ${s.version} · SIP-Port ${s.sip_port} · läuft seit ${h} h ${m} min`;
+  const body = $("accounts"); body.replaceChildren();
+  if (!s.registrations.length) { const tr = el("tr"), td = el("td", "empty", "Keine Konten eingerichtet: Anrufe gehen direkt an Adressen."); td.colSpan = 3; tr.append(td); body.append(tr); }
+  for (const r of s.registrations) {
+    const tr = el("tr"), st = el("span", "pill"); pill(st, REG[r.state] || [r.state, "off"]);
+    const last = el("td"); last.append(st); if (r.last_error) last.append(" " + r.last_error);
+    tr.append(el("td", "", r.account), el("td", "mono", r.address.replace(/^sip:/, "")), last); body.append(tr);
+  }
+  for (const c of s.calls) {
+    let card = cards.get(c.id);
+    if (!card) { card = makeCard(c); cards.set(c.id, card); $("calls").append(card.root); }
+    updateCard(card, c);
+  }
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/status");
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+  } catch (e) {
+    $("banner").hidden = false;
+    $("banner").textContent = "Die Brücke antwortet nicht.";
+  }
+}
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>

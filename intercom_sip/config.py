@@ -32,6 +32,19 @@ class SipCfg:
 
 
 @dataclass(frozen=True)
+class WebCfg:
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = 8088
+    user: str = "admin"
+    password: str = ""  # required unless the page is only reachable from this machine
+
+    @property
+    def local_only(self) -> bool:
+        return self.host in ("127.0.0.1", "localhost", "::1")
+
+
+@dataclass(frozen=True)
 class ChannelCfg:
     send: str | None = None  # line whose sound is sent to the other side on this channel
     receive: str | None = None  # line this channel from the other side is spoken into
@@ -40,7 +53,7 @@ class ChannelCfg:
 @dataclass(frozen=True)
 class CallCfg:
     name: str
-    mode: str  # "dial": we call `target`; "answer": we wait for a call from `accept_from`
+    mode: str  # "dial": we call `target` (by ourselves); "answer": we wait for a call; "both": we wait, and call when asked
     fmt: AudioFormat
     channels: tuple[ChannelCfg, ...]  # one per channel of the codec: left, right
     target: str | None = None
@@ -55,6 +68,7 @@ class CallCfg:
     keep_lines: bool = False  # keep the lines joined between calls (default: only while a call is up)
     rtp_latch: bool = False  # send to wherever the other side's RTP comes from (NAT), instead of what its SDP says
     playout_ms: int = 60  # jitter buffer for what arrives from the other side
+    autostart: bool = True  # "dial" profiles call by themselves at start (and again); False = only when asked on the status page
     in_gain_db: float = 0.0  # from the call into the lines
     out_gain_db: float = 0.0  # from the lines into the call
 
@@ -77,6 +91,7 @@ class SipConfig:
     lines: dict[str, LineCfg]
     calls: tuple[CallCfg, ...]
     debug: DebugCfg = DebugCfg()
+    web: WebCfg = WebCfg()
 
 
 def _num(raw: Mapping, key: str, default, lo: float, hi: float, where: str):
@@ -94,6 +109,25 @@ def _rtp_timeout(raw: Mapping, where: str) -> float:
     if 0 < v < 3:
         raise ConfigError(f"{where}: rtp_timeout_s must be 0 (off) or at least 3")
     return v
+
+
+def _web(raw: Mapping, env: Mapping[str, str]) -> WebCfg:
+    listen = str(raw.get("listen", "127.0.0.1:8088"))
+    host, _, port = listen.rpartition(":")
+    if not host or not port.isdigit() or not 0 <= int(port) <= 65535:
+        raise ConfigError('[web] listen must look like "127.0.0.1:8088"')
+    password = ""
+    if raw.get("password_env"):
+        var = str(raw["password_env"])
+        if not env.get(var):
+            raise ConfigError(f"[web]: environment variable {var} is not set")
+        password = env[var]
+    elif raw.get("password"):
+        password = str(raw["password"])
+    cfg = WebCfg(bool(raw.get("enabled", True)), host.strip("[]"), int(port), str(raw.get("user", "admin")), password)
+    if cfg.enabled and not cfg.local_only and not password:
+        raise ConfigError("[web]: a page that other machines can reach needs a password (password_env)")
+    return cfg
 
 
 def _channel(raw: Mapping, name: str, side: str) -> ChannelCfg:
@@ -178,8 +212,8 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
             continue
         where = f"call {name!r}"
         mode = str(raw.get("mode", "dial"))
-        if mode not in ("dial", "answer"):
-            raise ConfigError(f"{where}: mode must be 'dial' or 'answer'")
+        if mode not in ("dial", "answer", "both"):
+            raise ConfigError(f"{where}: mode must be 'dial', 'answer' or 'both'")
         target = str(raw["target"]).strip() if raw.get("target") else None
         account = str(raw["account"]) if raw.get("account") else None
         if account and account not in accounts:
@@ -198,8 +232,16 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
                 parse_uri(target)
             except SipError as e:
                 raise ConfigError(f"{where}: {e.reason}") from None
-        elif not accept and not account:
-            raise ConfigError(f"{where}: an answering call needs an account or accept_from (who may call us)")
+        else:
+            if not accept and not account:
+                raise ConfigError(f"{where}: an answering call needs an account or accept_from (who may call us)")
+            if target:  # the number the page offers to call
+                if account and "@" not in target and not target.startswith("sip:"):
+                    target = f"sip:{target}@{accounts[account].domain or parse_uri(accounts[account].registrar).host}"
+                try:
+                    parse_uri(target)
+                except SipError as e:
+                    raise ConfigError(f"{where}: {e.reason}") from None
 
         codec = str(raw.get("codec", "mp2")).lower()
         if codec not in CODECS:
@@ -250,7 +292,7 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
 
         calls.append(CallCfg(
             name=name, mode=mode, fmt=fmt, channels=chans, target=target, accept_from=tuple(accept),
-            account=account,
+            account=account, autostart=bool(raw.get("autostart", True)),
             auth_user=str(raw["auth_user"]) if raw.get("auth_user") else None, auth_password=password,
             redial=bool(raw.get("redial", True)), redial_s=_num(raw, "redial_s", 10.0, 1, 3600, where),
             rtp_timeout_s=_rtp_timeout(raw, where), keep_lines=bool(raw.get("keep_lines", False)),
@@ -259,7 +301,7 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
         ))
     if not calls:
         raise ConfigError("no enabled [[call]] configured")
-    return SipConfig(gw.server, gw.audio, sip, accounts, lines, tuple(calls), gw.debug)
+    return SipConfig(gw.server, gw.audio, sip, accounts, lines, tuple(calls), gw.debug, _web(data.get("web") or {}, env))
 
 
 def load_sip_config(path: str | Path, env: Mapping[str, str] | None = None,

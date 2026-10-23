@@ -16,6 +16,7 @@ from . import __version__
 from .calls import SipService
 from .config import ConfigError, SipConfig, load_sip_config
 from .registration import Registration
+from .web import WebServer
 from .sip import SipEndpoint, SipError, parse_uri
 
 log = logging.getLogger("sip")
@@ -60,21 +61,26 @@ async def cmd_check(cfg: SipConfig) -> int:
             for i, ch in enumerate(call.channels):
                 side = ("left", "right")[i]
                 print(f"  {side:5}: sends {ch.send or '-'}   receives into {ch.receive or '-'}")
-            if call.mode == "dial":
+            if call.account:
+                acc = cfg.accounts[call.account]
+                print(f"  account: {call.account} ({acc.user}@{acc.domain or parse_uri(acc.registrar).host}) at {acc.registrar}")
+            if call.mode in ("dial", "both") and call.target and not call.account:
                 try:
-                    uri = parse_uri(call.target or "")
+                    uri = parse_uri(call.target)
                     addr = await ua.resolve(uri.host, uri.port)
                     print(f"  target: {uri} -> {addr[0]}:{addr[1]}, we would use {cfg.sip.local_ip or ua.local_ip_for(addr)}")
                     try:
-                        status = await ua.options(call.target or "", timeout=3.0)
+                        status = await ua.options(call.target, timeout=3.0)
                         print(f"  OPTIONS: answered {status} (the other side is there)")
                     except SipError as e:
                         print(f"  OPTIONS: no answer ({e}) - many codecs do not answer OPTIONS; a call may still work")
                 except SipError as e:
                     print(f"  target: ERROR {e}")
                     ok = False
-            else:
-                print(f"  accepts calls from: {', '.join(call.accept_from)}")
+            elif call.mode in ("dial", "both") and call.target:
+                print(f"  target: {call.target} (through the account)")
+            if call.mode in ("answer", "both"):
+                print("  accepts calls from: " + (", ".join(call.accept_from) if call.accept_from else "the account's server"))
             for name in call.line_names:
                 line = cfg.lines[name]
                 try:
@@ -100,6 +106,14 @@ async def cmd_run(cfg: SipConfig, status_every: float, seconds: float | None) ->
         print(f"cannot open SIP port {cfg.sip.sip_port}: {e}", file=sys.stderr)
         await http.aclose()
         return 3
+    web = None
+    if cfg.web.enabled:
+        web = WebServer(service, cfg.web)
+        try:
+            await web.start()
+        except OSError as e:  # the bridge works without its page
+            log.warning("status page unavailable on %s:%d: %s", cfg.web.host, cfg.web.port, e)
+            web = None
     if seconds:
         loop.call_later(seconds, service.stop)
 
@@ -131,6 +145,8 @@ async def cmd_run(cfg: SipConfig, status_every: float, seconds: float | None) ->
         await service.run()
     finally:
         reporter.cancel()
+        if web is not None:
+            await web.close()
         await service.close()
         await http.aclose()
     log.info("stopped")

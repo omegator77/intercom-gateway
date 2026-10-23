@@ -28,6 +28,9 @@ intercom-sip = "intercom_sip.__main__:main"
 intercom-gateway-ui = "gateway.ui.app:main"
 intercom-client = "intercom_client.ui.app:main"
 
+[tool.setuptools.package-data]
+intercom_sip = ["web_page.html"]
+
 [tool.setuptools.packages.find]
 include = ["gateway*", "intercom_client*", "intercom_sip*"]
 

@@ -64,6 +64,12 @@ class CallRunner:
         self.media: CallMedia | None = None
         self.remote_agent = ""
         self._stop = asyncio.Event()
+        self._wake = asyncio.Event()  # a request from the status page (call now / stop calling)
+        self._hangup = asyncio.Event()
+        self._dial_target: str | None = None
+        self._one_off = False  # the call asked for was a number typed in by hand
+        self._paused = not cfg.autostart  # a dialling profile does not call by itself while paused
+        self.direction = ""  # "out" or "in" for the call that is up
         self._busy = False
         self._answer: asyncio.Future | None = None  # answering: resolves to (dialog, media, fmt) when a call is established
         self._prepared: dict[str, tuple[CallMedia, AudioFormat]] = {}  # call id -> media waiting for its dialog
@@ -93,45 +99,140 @@ class CallRunner:
         if self.cfg.keep_lines:
             await self._start_lines()
         try:
-            if self.cfg.mode == "dial":
-                await self._run_dialer()
-            else:
-                await self._run_answerer()
+            await self._main()
         finally:
             await self._stop_lines()
             self.state = CallState.STOPPED
 
-    async def _run_dialer(self) -> None:
-        backoff = 0.0
-        while not self._stop.is_set():
-            started = time.monotonic()
-            try:
-                await self._dial_once()
-            except asyncio.CancelledError:
-                raise
-            except SipError as e:
-                self.last_error = f"{e.status} {e.reason}".strip()
-                log.warning("[%s] call failed: %s", self.cfg.name, self.last_error)
-            except (SdpError, OSError) as e:
-                self.last_error = str(e)
-                log.warning("[%s] call failed: %s", self.cfg.name, e)
-            except Exception as e:
-                self.last_error = f"{type(e).__name__}: {e}"
-                log.exception("[%s] call failed unexpectedly", self.cfg.name)
-            self.connected_since = None
-            if self._stop.is_set() or not self.cfg.redial:
-                break
-            # a call that lasted a while ended for a reason that is probably gone: call again at once
-            backoff = 0.0 if time.monotonic() - started > 60 else self.cfg.redial_s
-            self.state = CallState.BACKOFF
-            delay = backoff * (0.8 + 0.4 * random.random())
-            log.info("[%s] calling again in %.0f s", self.cfg.name, delay)
-            await self._sleep(delay)
+    @property
+    def can_answer(self) -> bool:
+        return self.cfg.mode in ("answer", "both")
 
-    async def _dial_once(self) -> None:
+    @property
+    def can_dial(self) -> bool:
+        return self.cfg.mode in ("dial", "both")
+
+    @property
+    def in_call(self) -> bool:
+        return self.state in (CallState.DIALING, CallState.RINGING, CallState.CONNECTED)
+
+    async def _main(self) -> None:
+        loop = asyncio.get_running_loop()
+        retry_at = 0.0  # calling again by itself: not before this time (monotonic)
+        while not self._stop.is_set():
+            target: str | None = None
+            if self._dial_target:
+                target, self._dial_target = self._dial_target, None
+            elif self.cfg.mode == "dial" and not self._paused and time.monotonic() >= retry_at:
+                target = self.cfg.target
+            if target:
+                self._hangup.clear()
+                started = time.monotonic()
+                one_off, self._one_off = self._one_off, False
+                await self._call_out(target)
+                self.connected_since = None
+                if self._stop.is_set():
+                    break
+                if self.cfg.mode == "dial":
+                    if one_off:
+                        self._paused = True  # a number typed in by hand is called once; the automatic call stays off
+                    elif not self._paused:
+                        if self.cfg.redial:
+                            # a call that lasted a while ended for a reason that is probably gone: call again at once
+                            delay = 0.0 if time.monotonic() - started > 60 else self.cfg.redial_s * (0.8 + 0.4 * random.random())
+                            retry_at = time.monotonic() + delay
+                            log.info("[%s] calling again in %.0f s", self.cfg.name, delay)
+                        else:
+                            self._paused = True
+                continue
+            # nothing to do right now: wait for a call, for a request from the page, or for the time to call again
+            auto_pending = self.cfg.mode == "dial" and not self._paused
+            self.state = (CallState.WAITING if self.can_answer else CallState.BACKOFF if auto_pending
+                          else CallState.IDLE)
+            self._wake.clear()
+            waits = {asyncio.ensure_future(self._stop.wait()), asyncio.ensure_future(self._wake.wait())}
+            answer: asyncio.Future | None = None
+            if self.can_answer:
+                answer = self._answer = loop.create_future()
+                waits.add(answer)
+            timeout = max(0.0, retry_at - time.monotonic()) if auto_pending else None
+            try:
+                await asyncio.wait(waits, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                self._answer = None
+                for w in waits:
+                    if not w.done():
+                        w.cancel()  # an answer future that was cancelled makes a late `dialog_ready` drop its call
+            if answer is not None and answer.done() and not answer.cancelled():
+                dialog, media, remote = answer.result()
+                try:
+                    await self._session(dialog, media, remote.address, remote.port, "in")
+                except Exception as e:
+                    self.last_error = f"{type(e).__name__}: {e}"
+                    log.exception("[%s] call failed", self.cfg.name)
+                self.connected_since = None
+
+    async def _call_out(self, target: str) -> None:
+        try:
+            await self._dial_once(target)
+        except asyncio.CancelledError:
+            raise
+        except SipError as e:
+            self.last_error = f"{e.status} {e.reason}".strip()
+            log.warning("[%s] call failed: %s", self.cfg.name, self.last_error)
+        except (SdpError, OSError) as e:
+            self.last_error = str(e)
+            log.warning("[%s] call failed: %s", self.cfg.name, e)
+        except Exception as e:
+            self.last_error = f"{type(e).__name__}: {e}"
+            log.exception("[%s] call failed unexpectedly", self.cfg.name)
+
+    # ------------------------------------------------------------ requests from the status page
+    def _expand_target(self, raw: str) -> str:
+        """A bare number is dialled in the account's domain; raises SipError for something that is no address."""
+        acc = self.account
+        if acc is not None and "@" not in raw and not raw.startswith("sip:"):
+            raw = f"sip:{raw}@{acc.domain or parse_uri(acc.registrar).host}"
+        parse_uri(raw)
+        return raw
+
+    def request_dial(self, number: str | None = None) -> str | None:
+        """Call now (the number typed in, or the profile's own target). None = started, otherwise the reason why not."""
+        if not self.can_dial:
+            return "dieses Profil nimmt nur Anrufe an"
+        if self._stop.is_set() or self.state == CallState.STOPPED:
+            return "der Dienst wird beendet"
+        if self.in_call or self._busy:
+            return "es läuft schon ein Anruf"
+        raw = (number or "").strip() or (self.cfg.target or "")
+        if not raw:
+            return "keine Rufnummer angegeben"
+        try:
+            target = self._expand_target(raw)
+        except SipError as e:
+            return e.reason or "ungültige Rufnummer"
+        self._one_off = bool((number or "").strip()) and target != self.cfg.target
+        if not self._one_off:
+            self._paused = False  # the automatic call of a dialling profile is back on
+        self._dial_target = target
+        self._wake.set()
+        return None
+
+    def request_hangup(self) -> str | None:
+        """Hang up (or, while waiting to call again, stop calling). None = done, otherwise the reason why not."""
+        if self.in_call:
+            self._hangup.set()
+            if self.cfg.mode == "dial":
+                self._paused = True  # no automatic calling again until somebody presses "call"
+            return None
+        if self.cfg.mode == "dial" and not self._paused:
+            self._paused = True
+            self._wake.set()
+            return None
+        return "es läuft kein Anruf"
+
+    async def _dial_once(self, target: str) -> None:
         cfg = self.cfg
-        target = cfg.target
-        assert target is not None
         uri = parse_uri(target)
         acc = self.account
         proxy = acc.registrar if acc is not None else None  # a call of an account goes through its registrar
@@ -157,8 +258,9 @@ class CallRunner:
         invite = asyncio.ensure_future(self._ua.invite(target, offer, auth=auth, progress=progress, caller=caller,
                                                        domain=domain, proxy=proxy, contact_user=contact_user))
         stopped = asyncio.ensure_future(self._stop.wait())
+        hung_up = asyncio.ensure_future(self._hangup.wait())
         try:
-            await asyncio.wait({invite, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({invite, stopped, hung_up}, return_when=asyncio.FIRST_COMPLETED)
             if not invite.done():
                 invite.cancel()
                 await asyncio.gather(invite, return_exceptions=True)
@@ -180,7 +282,8 @@ class CallRunner:
             raise
         finally:
             stopped.cancel()
-        await self._session(dialog, media, remote.address, remote.port)
+            hung_up.cancel()
+        await self._session(dialog, media, remote.address, remote.port, "out")
 
     async def _run_answerer(self) -> None:
         loop = asyncio.get_running_loop()
@@ -255,8 +358,8 @@ class CallRunner:
         self._busy = False
 
     # ------------------------------------------------------------ a call that is up
-    async def _session(self, dialog: Dialog, media: CallMedia, address: str, port: int) -> None:
-        self.dialog, self.media = dialog, media
+    async def _session(self, dialog: Dialog, media: CallMedia, address: str, port: int, direction: str) -> None:
+        self.dialog, self.media, self.direction = dialog, media, direction
         self.state = CallState.CONNECTED
         self.connected_since = time.monotonic()
         self.calls_made += 1
@@ -280,9 +383,10 @@ class CallRunner:
             await self._start_lines()
             closed = asyncio.ensure_future(dialog.closed.wait())
             stopped = asyncio.ensure_future(self._stop.wait())
+            hung_up = asyncio.ensure_future(self._hangup.wait())
             try:
-                while not (closed.done() or stopped.done()):
-                    await asyncio.wait({closed, stopped}, timeout=1.0, return_when=asyncio.FIRST_COMPLETED)
+                while not (closed.done() or stopped.done() or hung_up.done()):
+                    await asyncio.wait({closed, stopped, hung_up}, timeout=1.0, return_when=asyncio.FIRST_COMPLETED)
                     if self.cfg.rtp_timeout_s and media.silent_for() > self.cfg.rtp_timeout_s:
                         self.last_error = f"no audio from the other side for {self.cfg.rtp_timeout_s:.0f} s"
                         log.warning("[%s] %s - hanging up", self.cfg.name, self.last_error)
@@ -290,6 +394,9 @@ class CallRunner:
             finally:
                 closed.cancel()
                 stopped.cancel()
+                hung_up.cancel()
+            if hung_up.done() and not dialog.closed.is_set():
+                log.info("[%s] hung up from the status page", self.cfg.name)
             if dialog.closed.is_set():
                 log.info("[%s] call ended (%s hung up)", self.cfg.name, dialog.closed_by)
                 if dialog.closed_by == "remote":
@@ -301,6 +408,7 @@ class CallRunner:
                 await self._stop_lines()
             self.dialog = None
             self._busy = False
+            self._hangup.clear()
             log.info("[%s] call closed", self.cfg.name)
 
     # ------------------------------------------------------------ the lines
@@ -331,11 +439,20 @@ class CallRunner:
 
     # ------------------------------------------------------------ status
     def status(self) -> dict:
+        d = self.dialog
         return {
             "call": self.cfg.name,
             "mode": self.cfg.mode,
+            "account": self.cfg.account,
             "target": self.cfg.target,
+            "wanted": self.cfg.fmt.describe(),
+            "channels": [{"send": c.send, "receive": c.receive} for c in self.cfg.channels],
             "state": self.state.value,
+            "paused": self._paused and self.cfg.mode == "dial",
+            "can_dial": self.can_dial and not self.in_call and not self._busy and self.state != CallState.STOPPED,
+            "can_hangup": self.in_call or (self.cfg.mode == "dial" and not self._paused),
+            "direction": self.direction if self.state == CallState.CONNECTED else "",
+            "peer": d.remote_uri if d is not None and self.state == CallState.CONNECTED else None,
             "calls": self.calls_made,
             "uptime_s": round(time.monotonic() - self.connected_since) if self.connected_since else 0,
             "last_error": self.last_error,
@@ -366,7 +483,7 @@ class SipService:
 
     async def _on_invite(self, call: IncomingCall) -> "Accept | Reject":
         for r in self.runners:
-            if r.cfg.mode == "answer" and await self._may_call(r.cfg, call):
+            if r.can_answer and await self._may_call(r.cfg, call):
                 result = await r.handle_incoming(call)
                 if isinstance(result, Accept):
                     self._by_call_id[call.call_id] = r
@@ -420,7 +537,13 @@ class SipService:
     async def close(self) -> None:
         await self.ua.close()
 
+    def dial(self, index: int, number: str | None = None) -> str | None:
+        return self.runners[index].request_dial(number)
+
+    def hangup(self, index: int) -> str | None:
+        return self.runners[index].request_hangup()
+
     def status(self) -> dict:
-        return {"sip_port": self.ua.port, "calls": [r.status() for r in self.runners],
+        return {"sip_port": self.ua.port, "calls": [dict(r.status(), id=i) for i, r in enumerate(self.runners)],
                 "registrations": [{"account": n, "address": r.address, "state": r.state, "last_error": r.last_error}
                                   for n, r in self.registrations.items()]}

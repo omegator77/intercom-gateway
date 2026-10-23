@@ -11,6 +11,14 @@ sip_port = 5060             # our SIP port (UDP). 0 = any free port
 rtp_port_min = 5004         # audio goes over UDP ports in this range (even ports; EBU Tech 3326 suggests 5004)
 rtp_port_max = 5100
 
+# The status page (accounts, calls with levels and lines, buttons to call and hang up). By default only this machine
+# can open it; for any other address a password is required.
+# [web]
+# enabled = true
+# listen = "127.0.0.1:8088"             # "0.0.0.0:8088" = reachable from the network (then password_env is required)
+# user = "admin"
+# password_env = "SIP_WEB_PASSWORD"
+
 # Accounts: like a hardware codec, the bridge can be logged in at one or several SIP servers, each with its own
 # credentials. While registered it can be called there (at "user"), and its calls can go out through that server.
 # A call picks its account with  account = "name". Without an account a call goes straight to an address.
