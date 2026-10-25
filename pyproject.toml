@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "intercom-gateway"
-version = "0.3.0"
+version = "0.3.1"
 description = "Headless gateway between sound card channels (e.g. Dante Virtual Soundcard) and intercom lines"
 requires-python = ">=3.11"
 dependencies = [

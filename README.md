@@ -14,7 +14,7 @@ Browser angemeldet sein.
 
 ## Status
 
-Frühe Version (0.3.0). Lauffähig sind:
+Frühe Version (0.3.1). Lauffähig sind:
 
 - das Gateway ohne Oberfläche (`intercom-gateway`)
 - eine Desktop-Oberfläche (`intercom-gateway-ui`, PySide6) mit Start, Stopp, Pegelanzeige und der Anzeige, wer sonst noch in der
