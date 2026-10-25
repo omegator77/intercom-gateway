@@ -1,0 +1,21 @@
+# Configuration of the SIP bridge on the server. Copy to sip.toml. Contains no secrets: the page password comes from
+# .env, and the accounts, lines and call profiles are made on the status page (they are kept in /data/sip-data.json).
+# More explanations: ../../sip.example.toml
+
+[server]
+url = "http://manager:8000"       # the intercom manager, inside the docker network of the stack
+
+[sip]
+sip_port = 5060
+local_ip = "203.0.113.10"         # REPLACE: this server's PUBLIC address (what the other side is told to send audio to)
+rtp_port_min = 5004               # audio ports; the same range is published in docker-compose.yml in step 2
+rtp_port_max = 5100
+
+[web]
+enabled = true
+listen = "0.0.0.0:8088"           # inside the container; the host publishes it on 127.0.0.1 only
+user = "admin"
+password_env = "SIP_WEB_PASSWORD"
+
+[store]
+path = "/data/sip-data.json"

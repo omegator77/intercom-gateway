@@ -194,6 +194,11 @@ Anrufe in beide Richtungen mit Layer II (dual-mono kommt mit sauber getrennten K
 der Betrieb mit echten Rundfunk-Codecs (Luci, Mayah, Prontonet u. a.): deren SDP-Eigenheiten (z. B. Parameter hinter `a=fmtp`)
 zeigt erst ein echter Anruf.
 
+### Auf dem Server betreiben
+
+Wie die Brücke als eigener Container neben dem Intercom-Stack läuft (Netzwerk, Seite per SSH-Tunnel, Ports und Firewall,
+Sicherung): [deploy/sip/README.md](deploy/sip/README.md).
+
 ### Lokaler SIP-Testserver (Kamailio)
 
 Unter `dev/sipserver/` liegt ein Kamailio als Anmelde- und Vermittlungsserver für Tests, dazu eine kleine Verwaltungsseite.

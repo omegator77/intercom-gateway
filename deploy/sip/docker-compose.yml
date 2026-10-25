@@ -1,0 +1,59 @@
+# The SIP bridge on the intercom server: a compose project of its own next to the intercom stack
+# (~/eyevinn-intercom). It only joins that stack's network; starting, stopping or removing it never touches
+# mongo / smb / manager / frontend / proxy.
+#
+#   cp .env.sample .env  &&  cp sip.example.toml sip.toml      (then fill in both)
+#   docker compose up -d --build        start / update
+#   docker compose logs -f sip          what it does
+#   docker compose rm -sf sip           remove it again (the settings stay in the volume)
+#
+# Step 1 publishes only the status page, on this machine's loopback (reach it with an SSH tunnel).
+# SIP and RTP ports are published in step 2, once the firewall lets only the other side's addresses in.
+name: intercom-sip
+
+services:
+  sip:
+    build:
+      # the gateway repository on GitHub, at SIP_REF (a tag or commit; "main" follows the latest)
+      context: https://github.com/omegator77/intercom-gateway.git#${SIP_REF:-main}
+      dockerfile: Dockerfile.sip
+    image: intercom-sip:${SIP_REF:-main}
+    container_name: intercom-sip
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./sip.toml:/etc/intercom-sip/sip.toml:ro
+      - sip_data:/data
+    ports:
+      - "127.0.0.1:8088:8088"   # status page (password, see .env) - SSH tunnel: ssh -L 8088:127.0.0.1:8088 <server>
+      # Step 2 (only with the firewall in place, see README):
+      # - "5060:5060/udp"         # SIP
+      # - "5004-5100:5004-5100/udp"  # audio (RTP), the same range as rtp_port_min/max in sip.toml
+    networks: [intercom]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      # the page answers 401 without the password, which is fine: it is up
+      test: ["CMD", "python", "-c", "import urllib.request as u, urllib.error as e\ntry:\n u.urlopen('http://127.0.0.1:8088/', timeout=3)\nexcept e.HTTPError as x:\n raise SystemExit(0 if x.code == 401 else 1)\n"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  intercom:
+    external: true
+    name: eyevinn-intercom_intercom   # the network of the existing intercom stack
+
+volumes:
+  sip_data:
