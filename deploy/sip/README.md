@@ -16,6 +16,7 @@ mkdir -p ~/eyevinn-intercom-sip && cd ~/eyevinn-intercom-sip
 # die drei Dateien aus diesem Ordner hierher kopieren: docker-compose.yml, sip.example.toml, .env.sample
 cp .env.sample .env       # SIP_WEB_PASSWORD eintragen (openssl rand -base64 18), SIP_REF auf einen Tag oder Commit
 cp sip.example.toml sip.toml   # local_ip auf die öffentliche Adresse des Servers setzen
+chmod 644 sip.toml        # enthält keine Geheimnisse; der Container läuft als "nobody" und muss sie lesen können (.env bleibt 600)
 docker compose up -d --build
 docker compose ps         # "healthy" nach etwa einer halben Minute
 docker compose logs sip   # sollte "SIP listening ..." und "status page ..." zeigen
