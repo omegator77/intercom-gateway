@@ -493,7 +493,7 @@ function profileForm(item) {
   const cmode = select("channel_mode", [["dual-mono", "x"]], c.channel_mode || "dual-mono");
   const bitrate = select("bitrate_kbps", [[192, "192"]], c.bitrate_kbps || 192);
   const fTarget = field("Ziel (Nummer oder Adresse)", target, false, "Wird angerufen, wenn das Feld auf der Statusseite leer bleibt.");
-  const fAccept = field("Anrufe annehmen von (ohne Konto)", accept, false);
+  const fAccept = field("Anrufe annehmen von", accept, true, "");
   grid.append(field("Name", name, false), field("Verhalten", mode, false), field("Konto", account, false), fTarget, fAccept);
 
   const fRate = field("Abtastrate", rate), fMode = field("Kanäle", cmode), fBit = field("Datenrate (kbit/s)", bitrate);
@@ -546,7 +546,13 @@ function profileForm(item) {
     rows[1].tr.hidden = mono;
     rows[0].th.textContent = mono ? "Kanal" : "links";
     const dialing = mode.value !== "answer", answering = mode.value !== "dial";
-    fTarget.hidden = !dialing; fAccept.hidden = !answering || !!account.value;
+    fTarget.hidden = !dialing; fAccept.hidden = !answering;
+    fAccept.firstChild.textContent = account.value ? "Zusätzlich annehmen von (Adressen oder Namen)" : "Anrufe annehmen von (Adressen oder Namen)";
+    let help = fAccept.querySelector(".help");
+    if (!help) { help = el("span", "help"); fAccept.append(help); }
+    help.textContent = account.value
+      ? "Anrufe vom Server des Kontos werden immer angenommen. Kommt ein Anruf von einer anderen Adresse (steht im Log als „refusing a call from …“), trag sie hier ein."
+      : "Ohne Konto werden nur Anrufe von diesen Adressen angenommen.";
     auto.hidden = redial.hidden = mode.value !== "dial";
   };
   codec.addEventListener("change", sync); cmode.addEventListener("change", sync); mode.addEventListener("change", sync); account.addEventListener("change", sync);

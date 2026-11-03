@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import socket
+import time
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
@@ -352,6 +353,51 @@ InviteHandler = Callable[[IncomingCall], Awaitable["Accept | Reject"]]
 
 # ---------------------------------------------------------------- the endpoint
 
+class RateLimiter:
+    """Token buckets for what arrives on the SIP port: one per source address and one for everything, so a flood
+    from one address - or from many, spoofed ones - cannot make the bridge do unbounded work or keep unbounded state.
+    Addresses we are talking to ourselves (`trusted`: the registrar, the other side of a call) are only held to their
+    own bucket, so an attack from elsewhere does not cut them off."""
+
+    def __init__(self, per_ip_rate: float = 20.0, per_ip_burst: float = 50.0, total_rate: float = 300.0,
+                 total_burst: float = 600.0, max_sources: int = 4096, clock: Callable[[], float] = time.monotonic):
+        self.per_ip = (per_ip_rate, per_ip_burst)
+        self.total_rate, self.total_burst = total_rate, total_burst
+        self.max_sources = max_sources
+        self._clock = clock
+        self._total = [total_burst, clock()]
+        self._src: dict[str, list[float]] = {}  # address -> [tokens, time of the last refill]
+
+    def _prune(self, now: float) -> None:
+        rate, burst = self.per_ip
+        for ip in [ip for ip, (tokens, last) in self._src.items() if tokens + (now - last) * rate >= burst]:
+            del self._src[ip]  # idle: its bucket is full again, nothing is lost by forgetting it
+
+    def allow(self, ip: str, trusted: bool = False) -> bool:
+        now = self._clock()
+        self._total[0] = min(self.total_burst, self._total[0] + (now - self._total[1]) * self.total_rate)
+        self._total[1] = now
+        bucket = self._src.get(ip)
+        if bucket is None:
+            if len(self._src) >= self.max_sources:
+                self._prune(now)
+                if len(self._src) >= self.max_sources and not trusted:
+                    return False  # a table full of active sources: no room for strangers
+            bucket = self._src[ip] = [self.per_ip[1], now]
+        rate, burst = self.per_ip
+        bucket[0] = min(burst, bucket[0] + (now - bucket[1]) * rate)
+        bucket[1] = now
+        if bucket[0] < 1 or (not trusted and self._total[0] < 1):
+            return False
+        bucket[0] -= 1
+        if not trusted:
+            self._total[0] -= 1
+        return True
+
+
+TRUST_S = 600.0  # how long an address we sent a request to (or accepted a call from) counts as one we talk to
+
+
 class SipEndpoint(asyncio.DatagramProtocol):
     def __init__(self, port: int = 5060, user: str = "intercom", display: str = "Open Intercom",
                  advertise_ip: str | None = None, bind_ip: str = "0.0.0.0"):
@@ -369,6 +415,29 @@ class SipEndpoint(asyncio.DatagramProtocol):
         self._server_tx: dict[tuple, tuple[bytes, tuple[str, int]]] = {}  # last response to a request, for retransmissions
         self._incoming: dict[str, IncomingCall] = {}  # call-id -> invite that is still being decided
         self._tasks: set[asyncio.Task] = set()
+        self.limiter = RateLimiter()
+        self._peers: dict[str, float] = {}  # address -> until when we count it as one we talk to
+        self.dropped = 0  # datagrams dropped by the limiter
+        self._drops_since_log = 0
+        self._drop_logged = 0.0
+
+    def _trust(self, ip: str) -> None:
+        now = time.monotonic()
+        if len(self._peers) > 256:
+            self._peers = {k: v for k, v in self._peers.items() if v > now}
+        self._peers[ip] = now + TRUST_S
+
+    def _admit(self, ip: str) -> bool:
+        """The rate limit for one datagram; says so (at most every 10 s) when it drops some."""
+        if self.limiter.allow(ip, trusted=self._peers.get(ip, 0.0) > time.monotonic()):
+            return True
+        self.dropped += 1
+        self._drops_since_log += 1
+        now = time.monotonic()
+        if now - self._drop_logged >= 10.0:
+            log.warning("rate limit: %d datagram(s) dropped, the last one from %s", self._drops_since_log, ip)
+            self._drop_logged, self._drops_since_log = now, 0
+        return False
 
     # ------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -430,6 +499,8 @@ class SipEndpoint(asyncio.DatagramProtocol):
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         if data.strip() == b"":  # keep-alive
             return
+        if not self._admit(addr[0]):
+            return
         try:
             msg = parse_message(data)
         except Exception:
@@ -471,6 +542,7 @@ class SipEndpoint(asyncio.DatagramProtocol):
         interval = T1
         deadline = loop.time() + timeout
         got_provisional = False
+        self._trust(addr[0])  # whoever we ask may answer without being counted as a stranger
         try:
             self._sendto(data, addr)
             while True:
@@ -721,6 +793,7 @@ class SipEndpoint(asyncio.DatagramProtocol):
             d.local_sdp = decision.sdp
             d.remote_sdp = offer
             self._dialogs[call_id] = d
+            self._trust(addr[0])  # the other side of a call we accepted (its BYE must get through)
             if self.on_accepted:
                 self.on_accepted(d)
             self._spawn(self._await_ack(d, req, addr))
