@@ -411,7 +411,9 @@ class SipEndpoint(asyncio.DatagramProtocol):
         self.on_accepted: Callable[[Dialog], None] | None = None  # a call we accepted became a dialog
         self._transport: asyncio.DatagramTransport | None = None
         self._client: dict[str, asyncio.Queue] = {}  # branch -> responses of one client transaction
-        self._dialogs: dict[str, Dialog] = {}  # call-id -> dialog
+        # (call-id, our tag) -> dialog. The call-id alone is not enough: a proxy that keeps the call-id when it passes a
+        # call on gives a call of ours *to ourselves* (two accounts of this bridge) the same call-id on both ends
+        self._dialogs: dict[tuple[str, str], Dialog] = {}
         self._server_tx: dict[tuple, tuple[bytes, tuple[str, int]]] = {}  # last response to a request, for retransmissions
         self._incoming: dict[str, IncomingCall] = {}  # call-id -> invite that is still being decided
         self._tasks: set[asyncio.Task] = set()
@@ -465,7 +467,16 @@ class SipEndpoint(asyncio.DatagramProtocol):
         return t
 
     def forget(self, dialog: Dialog) -> None:
-        self._dialogs.pop(dialog.call_id, None)
+        self._dialogs.pop((dialog.call_id, dialog.local_tag), None)
+
+    def _find_dialog(self, call_id: str, our_tag: str | None) -> Dialog | None:
+        """The dialog a received message belongs to: the one with this call-id and our tag (the To tag of a request,
+        the From tag of a response to ours). A peer that leaves the tag out is matched by the call-id when only one fits."""
+        d = self._dialogs.get((call_id, our_tag or ""))
+        if d is not None or our_tag:
+            return d
+        same = [v for (cid, _), v in self._dialogs.items() if cid == call_id]
+        return same[0] if len(same) == 1 else None
 
     # ------------------------------------------------------------ addressing
     def local_ip_for(self, addr: tuple[str, int]) -> str:
@@ -526,7 +537,7 @@ class SipEndpoint(asyncio.DatagramProtocol):
             q.put_nowait(msg)
             return
         cseq_n, method = msg.cseq
-        d = self._dialogs.get(msg.call_id)
+        d = self._find_dialog(msg.call_id, header_tag(msg.get("from")))  # a response carries our tag in From
         if d is not None and method == "INVITE" and 200 <= msg.status < 300 and d._ack:
             self._sendto(d._ack, d._request_addr())  # our ACK was lost: the 200 came again
 
@@ -654,7 +665,7 @@ class SipEndpoint(asyncio.DatagramProtocol):
                    header_tag(resp.get("to")) or "", remote_target, routes, "uac", cseq, 0, ip, addr)
         d.remote_sdp = resp.body.decode("utf-8", errors="replace")
         d.local_sdp = sdp
-        self._dialogs[call_id] = d
+        self._dialogs[(call_id, d.local_tag)] = d
         ack = d.build_request("ACK", cseq=cseq)
         d._ack = ack.encode()
         self._sendto(d._ack, d._request_addr())
@@ -710,7 +721,7 @@ class SipEndpoint(asyncio.DatagramProtocol):
         if method != "ACK" and key in self._server_tx:  # a retransmission: say the same thing again
             self._sendto(self._server_tx[key][0], addr)
             return
-        dialog = self._dialogs.get(req.call_id)
+        dialog = self._find_dialog(req.call_id, header_tag(req.get("to")))  # a request carries our tag in To
         if method == "OPTIONS":
             if self.on_options:
                 self.on_options(addr[0])
@@ -792,7 +803,7 @@ class SipEndpoint(asyncio.DatagramProtocol):
                        req.cseq[0], ip, addr)
             d.local_sdp = decision.sdp
             d.remote_sdp = offer
-            self._dialogs[call_id] = d
+            self._dialogs[(call_id, to_tag)] = d
             self._trust(addr[0])  # the other side of a call we accepted (its BYE must get through)
             if self.on_accepted:
                 self.on_accepted(d)

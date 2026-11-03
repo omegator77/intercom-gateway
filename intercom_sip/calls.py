@@ -359,6 +359,14 @@ class CallRunner:
         self._busy = False
 
     # ------------------------------------------------------------ a call that is up
+    def _rtp_address(self, address: str) -> str:
+        """Where audio for a peer at `address` goes. A call between two accounts of this bridge (a test, or one account
+        calling another) is offered our own public address by a registrar that passes the SDP on unchanged; sent there,
+        the audio would leave the container and have to come back through the host's firewall. It stays inside."""
+        if self._sip.local_ip and address == self._sip.local_ip:
+            return "127.0.0.1"
+        return address
+
     async def _session(self, dialog: Dialog, media: CallMedia, address: str, port: int, direction: str) -> None:
         self.dialog, self.media, self.direction = dialog, media, direction
         self.state = CallState.CONNECTED
@@ -366,7 +374,9 @@ class CallRunner:
         self.calls_made += 1
         self.last_error = None
         self._busy = True
-        log.info("[%s] call is up: %s, RTP to %s:%d", self.cfg.name, media.fmt.describe(), address, port)
+        target = self._rtp_address(address)
+        log.info("[%s] call is up: %s, RTP to %s:%d%s", self.cfg.name, media.fmt.describe(), address, port,
+                 " (this bridge itself: audio stays inside)" if target != address else "")
 
         def reinvite(sdp: str) -> bool:
             try:
@@ -375,11 +385,11 @@ class CallRunner:
                 return False
             if not any(c.pt == media.pt for c in r.codecs):
                 return False
-            media.retarget((r.address, r.port))
+            media.retarget((self._rtp_address(r.address), r.port))
             return True
 
         dialog.on_remote_sdp = reinvite
-        media.start((address, port))
+        media.start((target, port))
         try:
             await self._start_lines()
             closed = asyncio.ensure_future(dialog.closed.wait())
