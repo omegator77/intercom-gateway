@@ -22,7 +22,7 @@ log = logging.getLogger("sip.admin")
 # what the page may set, and how each value is read
 FIELDS: dict[str, dict[str, type]] = {
     "accounts": {"name": str, "registrar": str, "user": str, "domain": str, "auth_user": str, "contact_user": str,
-                 "expires_s": int, "password": str},
+                 "expires_s": int, "password": str, "enabled": bool},
     "lines": {"name": str, "production_id": str, "line_id": str, "username": str, "password": str},
     "calls": {"name": str, "mode": str, "account": str, "target": str, "codec": str, "channel_mode": str,
               "sample_rate": int, "bitrate_kbps": int, "ptime_ms": int, "playout_ms": int, "redial_s": float,
@@ -67,6 +67,8 @@ def clean(kind: str, payload: Mapping, existing: Mapping | None) -> dict:
     secret = SECRET[kind]
     if secret in FIELDS[kind] and secret not in entry and existing and existing.get(secret):
         entry[secret] = existing[secret]
+    if kind == "accounts" and "enabled" not in entry and existing and "enabled" in existing:
+        entry["enabled"] = existing["enabled"]  # editing an account does not switch it on or off
     for key in REQUIRED[kind]:
         if key not in entry:
             raise StoreError(f"Bitte „{PRETTY.get(key, key)}“ ausfüllen.")
@@ -95,6 +97,7 @@ class ConfigManager:
     # ------------------------------------------------------------ what the page shows
     def view(self) -> dict:
         raw = self.merged_raw()
+        off = {e["name"] for e in raw.get("account", []) if not e.get("enabled", True)}
         out: dict = {"server_url": self.service.cfg.server.url, "codecs": {}}
         for kind in KINDS:
             items = []
@@ -105,6 +108,8 @@ class ConfigManager:
                 item["origin"] = "file" if e["name"] in file_names else "page"
                 if kind != "calls":
                     item["used_by"] = used_by(raw, kind, e["name"])
+                else:
+                    item["paused"] = e.get("account") in off  # its account is switched off
                 items.append(item)
             out[kind] = items
         return out
@@ -123,6 +128,18 @@ class ConfigManager:
             if entry["name"] in file_names:
                 raise StoreError(f"{LABEL[kind]} „{entry['name']}“ gibt es schon (in der Konfigurationsdatei).")
             await self._commit(lambda: self.store.put(kind, entry, name))
+
+    async def set_enabled(self, name: str, enabled: bool) -> None:
+        """Switch an account on or off: off means it is unregistered and takes no calls, but stays stored (and the call
+        profiles that use it pause until it is back)."""
+        async with self._lock:
+            if name in {e["name"] for e in self.toml.get("account", [])}:
+                raise StoreError(f"{LABEL['accounts']} „{name}“ steht in der Konfigurationsdatei und lässt sich hier nicht ändern.")
+            existing = self.store.get("accounts", name)
+            if existing is None:
+                raise StoreError(f"{LABEL['accounts']} „{name}“ gibt es nicht.")
+            entry = {**existing, "enabled": enabled}
+            await self._commit(lambda: self.store.put("accounts", entry, name))
 
     async def delete(self, kind: str, name: str) -> None:
         async with self._lock:

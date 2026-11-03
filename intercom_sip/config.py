@@ -178,13 +178,15 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
     if sip.rtp_port_max < sip.rtp_port_min + 1:
         raise ConfigError("[sip] rtp_port_max must be above rtp_port_min")
     accounts: dict[str, RegisterCfg] = {}
+    switched_off: set[str] = set()
     for raw in data.get("account", []):
         name = str(raw.get("name", "")).strip()
         if not name:
             raise ConfigError("every [[account]] needs a name")
-        if name in accounts:
+        if name in accounts or name in switched_off:
             raise ConfigError(f"duplicate account name {name!r}")
         if not raw.get("enabled", True):
+            switched_off.add(name)
             continue
         where = f"account {name!r}"
         for key in ("registrar", "user"):
@@ -224,6 +226,8 @@ def parse_sip_config(data: Mapping, env: Mapping[str, str] | None = None,
         names.add(name)
         if not raw.get("enabled", True):
             continue
+        if raw.get("account") and str(raw["account"]) in switched_off:
+            continue  # its account is switched off: the profile waits, unchanged, until the account is back
         where = f"call {name!r}"
         mode = str(raw.get("mode", "dial"))
         if mode not in ("dial", "answer", "both"):

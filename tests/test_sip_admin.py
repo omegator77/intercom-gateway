@@ -230,6 +230,106 @@ def test_accounts_register_when_added_and_are_removed_again_when_deleted_or_chan
     asyncio.run(go())
 
 
+def test_a_switched_off_account_is_unregistered_pauses_its_profiles_and_comes_back_when_switched_on(tmp_path):
+    async def go():
+        loop = asyncio.get_running_loop()
+        reg = FakeRegistrar("4711", "secret")
+        transport, _ = await loop.create_datagram_endpoint(lambda: reg, local_addr=("127.0.0.1", 0))
+        port = transport.get_extra_info("sockname")[1]
+        service, manager, store = await make(tmp_path)
+        run = asyncio.ensure_future(service.run())
+        form = {"name": "ARD", "registrar": f"sip:127.0.0.1:{port}", "user": "4711", "password": "secret",
+                "domain": "sip.local"}
+        try:
+            await manager.save("lines", None, line_form("Regie"))
+            await manager.save("accounts", None, form)
+            await manager.save("calls", None, profile_form("Studio", account="ARD", accept_from=""))
+            assert await wait_for(lambda: service.registrations["ARD"].state == "registered")
+            assert reg.bindings.get("4711") == 120 and [r.cfg.name for r in service.runners] == ["Studio"]
+
+            await manager.set_enabled("ARD", False)
+            assert "ARD" not in service.registrations and reg.bindings == {}  # unregistered at the registrar
+            assert service.runners == []  # the profile waits instead of failing
+            view = manager.view()
+            assert view["accounts"][0]["enabled"] is False and "password" not in view["accounts"][0]
+            assert [(c["name"], c["paused"]) for c in view["calls"]] == [("Studio", True)]
+            again = Store(tmp_path / "sip-data.json")
+            again.load()
+            assert again.get("accounts", "ARD")["enabled"] is False  # survives a restart
+
+            await manager.save("accounts", "ARD", {**form, "password": "", "expires_s": "200"})  # editing keeps it off
+            assert store.get("accounts", "ARD")["enabled"] is False and "ARD" not in service.registrations
+
+            await manager.set_enabled("ARD", True)
+            assert await wait_for(lambda: service.registrations["ARD"].state == "registered")
+            assert reg.bindings.get("4711") == 120 and [r.cfg.name for r in service.runners] == ["Studio"]
+            assert store.get("accounts", "ARD")["expires_s"] == 200 and service.registrations["ARD"].cfg.expires_s == 200
+            assert manager.view()["calls"][0]["paused"] is False
+
+            with pytest.raises(StoreError, match="gibt es nicht"):
+                await manager.set_enabled("Nope", False)
+        finally:
+            service.stop()
+            await asyncio.wait_for(run, 15)
+            await service.close()
+            transport.close()
+
+    asyncio.run(go())
+
+
+def test_a_profile_of_a_switched_off_account_is_no_error_but_an_unknown_account_still_is():
+    off = {**BASE, "account": [{"name": "ARD", "registrar": "sip:s.example", "user": "1", "enabled": False}],
+           "line": [{"name": "L", "production_id": "1", "line_id": "1", "username": "u", "password": "p"}],
+           "call": [{"name": "Studio", "mode": "answer", "account": "ARD", "codec": "g722", "left": {"line": "L"}}]}
+    cfg = parse_sip_config(off, lookup_password=NOPW, require_calls=False)
+    assert cfg.accounts == {} and cfg.calls == ()
+    with pytest.raises(ConfigError, match="duplicate account"):
+        parse_sip_config({**off, "account": off["account"] * 2}, lookup_password=NOPW, require_calls=False)
+    typo = {**off, "call": [{**off["call"][0], "account": "ARDD"}]}
+    with pytest.raises(ConfigError, match="unknown account"):
+        parse_sip_config(typo, lookup_password=NOPW, require_calls=False)
+
+
+def test_the_api_switches_an_account_on_and_off_and_only_with_the_header(tmp_path):
+    async def go():
+        loop = asyncio.get_running_loop()
+        reg = FakeRegistrar("4711", "secret")
+        transport, _ = await loop.create_datagram_endpoint(lambda: reg, local_addr=("127.0.0.1", 0))
+        port = transport.get_extra_info("sockname")[1]
+        service, manager, store = await make(tmp_path)
+        run = asyncio.ensure_future(service.run())
+        web = WebServer(service, WebCfg(True, "127.0.0.1", 0), manager)
+        await web.start()
+
+        def call(method, path, body=None, headers=None):
+            raw = json.dumps(body).encode() if body is not None else b""
+            h = {"X-Requested-With": "intercom-sip", "Content-Type": "application/json", **(headers or {})}
+            return loop.run_in_executor(None, lambda: http(web.port, method, path, h, raw))
+
+        try:
+            await manager.save("accounts", None, {"name": "ARD", "registrar": f"sip:127.0.0.1:{port}", "user": "4711",
+                                                  "password": "secret", "domain": "sip.local"})
+            assert await wait_for(lambda: service.registrations["ARD"].state == "registered")
+            assert (await call("POST", "/api/accounts/ARD/enabled", {"enabled": False}, {"X-Requested-With": ""}))[0] == 403
+            assert (await call("POST", "/api/accounts/ARD/enabled", {"enabled": "no"}))[0] == 400  # a real boolean only
+            assert (await call("POST", "/api/accounts/Nope/enabled", {"enabled": False}))[0] == 400
+            assert "ARD" in service.registrations and reg.bindings.get("4711") == 120  # nothing happened yet
+            assert (await call("POST", "/api/accounts/ARD/enabled", {"enabled": False}))[0] == 200
+            assert "ARD" not in service.registrations and reg.bindings == {}
+            code, body = await call("GET", "/api/config")
+            assert code == 200 and json.loads(body)["accounts"][0]["enabled"] is False and "secret" not in body.decode()
+            assert (await call("POST", "/api/accounts/ARD/enabled", {"enabled": True}))[0] == 200
+            assert await wait_for(lambda: service.registrations["ARD"].state == "registered")
+        finally:
+            await web.close()
+            service.stop()
+            await asyncio.wait_for(run, 15)
+            await service.close()
+            transport.close()
+
+    asyncio.run(go())
+
+
 def test_entries_of_the_toml_file_are_shown_but_cannot_be_touched(tmp_path):
     async def go():
         toml = {**BASE, "line": [{"name": "Fest", "production_id": "1", "line_id": "1", "username": "f", "password": "x"}],

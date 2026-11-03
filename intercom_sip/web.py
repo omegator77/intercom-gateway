@@ -174,7 +174,7 @@ class WebServer:
         if path == "/api/config" and method == "GET":
             return self._json(200, self.manager.view())
         parts = [unquote(p) for p in path.split("/")[2:]]
-        if not parts or parts[0] not in KINDS or len(parts) > 2:
+        if not parts or parts[0] not in KINDS or len(parts) > 3:
             return None
         if method != "GET" and headers.get("x-requested-with") != "intercom-sip":
             return self._json(403, {"error": "missing header"})
@@ -186,6 +186,11 @@ class WebServer:
             return self._json(400, {"error": "ungültige Eingabe"})
         kind = parts[0]
         try:
+            if len(parts) == 3 and kind == "accounts" and parts[2] == "enabled" and method == "POST":
+                if not isinstance(data.get("enabled"), bool):
+                    return self._json(400, {"error": "ungültige Eingabe"})
+                await self.manager.set_enabled(parts[1], data["enabled"])
+                return self._json(200, {"ok": True})
             if len(parts) == 2 and kind == "accounts" and parts[1] == "test" and method == "POST":
                 return self._json(200, await self.manager.test_account(data))
             if len(parts) == 2 and kind == "lines" and parts[1] == "discover" and method == "POST":

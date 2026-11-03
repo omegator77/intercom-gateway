@@ -265,11 +265,16 @@ function render(s) {
   const h = Math.floor(s.uptime_s / 3600), m = Math.floor((s.uptime_s % 3600) / 60);
   $("meta").textContent = `Version ${s.version} · SIP-Port ${s.sip_port} · läuft seit ${h} h ${m} min`;
   const body = $("accounts"); body.replaceChildren();
-  if (!s.registrations.length) { const tr = el("tr"), td = el("td", "empty", "Keine Konten eingerichtet: Anrufe gehen direkt an Adressen."); td.colSpan = 3; tr.append(td); body.append(tr); }
+  const switchedOff = config.accounts.filter((a) => a.enabled === false);
+  if (!s.registrations.length && !switchedOff.length) { const tr = el("tr"), td = el("td", "empty", "Keine Konten eingerichtet: Anrufe gehen direkt an Adressen."); td.colSpan = 3; tr.append(td); body.append(tr); }
   for (const r of s.registrations) {
     const tr = el("tr"), st = el("span", "pill"); pill(st, REG[r.state] || [r.state, "off"]);
     const last = el("td"); last.append(st); if (r.last_error) last.append(" " + r.last_error);
     tr.append(el("td", "", r.account), el("td", "mono", r.address.replace(/^sip:/, "")), last); body.append(tr);
+  }
+  for (const a of switchedOff) {
+    const tr = el("tr"), st = el("span", "pill"), last = el("td"); pill(st, ["ausgeschaltet", "off"]); last.append(st);
+    tr.append(el("td", "", a.name), el("td", "mono", a.user + "@" + (a.domain || a.registrar.replace(/^sip:/, "").replace(/:\d+$/, ""))), last); body.append(tr);
   }
   const ids = new Set(s.calls.map((c) => c.id));
   for (const [id, card] of cards) if (!ids.has(id)) { card.root.remove(); cards.delete(id); }
@@ -310,6 +315,19 @@ function actions(kind, item) {
   if (item.origin === "file") { td.append(el("span", "pill off", "aus der Datei")); return td; }
   const edit = el("button", "small", "Bearbeiten"), del = el("button", "small danger", "Löschen");
   edit.type = del.type = "button";
+  if (kind === "accounts") {
+    const on = item.enabled !== false, sw = el("button", "small", on ? "Ausschalten" : "Einschalten");
+    sw.type = "button";
+    sw.addEventListener("click", async () => {
+      sw.disabled = true;
+      try {
+        await api("POST", `/api/accounts/${encodeURIComponent(item.name)}/enabled`, { enabled: !on });
+        note(on ? `„${item.name}“ ist ausgeschaltet und abgemeldet.` : `„${item.name}“ ist eingeschaltet und meldet sich an.`, "good");
+        await loadConfig(); refresh();
+      } catch (e) { note(e.message, "bad"); sw.disabled = false; }
+    });
+    td.append(sw, " ");
+  }
   edit.addEventListener("click", () => openForm(kind, item));
   del.addEventListener("click", async () => {
     if (!confirm(`„${item.name}“ löschen?`)) return;
@@ -317,6 +335,12 @@ function actions(kind, item) {
     catch (e) { note(e.message, "bad"); }
   });
   td.append(edit, " ", del);
+  return td;
+}
+
+function nameCell(name, tag) {
+  const td = el("td", "", name);
+  if (tag) td.append(" ", el("span", "pill off", tag));
   return td;
 }
 
@@ -342,11 +366,11 @@ function fillTable(id, rows, cols, none) {
 }
 
 function renderConfig() {
-  fillTable("list-accounts", config.accounts, (a) => [el("td", "", a.name), el("td", "mono", a.registrar.replace(/^sip:/, "")),
+  fillTable("list-accounts", config.accounts, (a) => [nameCell(a.name, a.enabled === false ? "aus" : ""), el("td", "mono", a.registrar.replace(/^sip:/, "")),
     el("td", "", a.user + (a.domain ? "@" + a.domain : "")), el("td", "", usedBy(a)), actions("accounts", a)], "Noch kein Konto.");
   fillTable("list-lines", config.lines, (l) => [el("td", "", l.name), el("td", "", l.username),
     el("td", "mono", `Produktion ${l.production_id} · Leitung ${l.line_id}`), el("td", "", usedBy(l)), actions("lines", l)], "Noch keine Leitung.");
-  fillTable("list-calls", config.calls, (c) => [el("td", "", c.name), el("td", "", MODE[c.mode || "dial"]), el("td", "", c.account || "direkt"),
+  fillTable("list-calls", config.calls, (c) => [nameCell(c.name, c.paused ? "pausiert (Konto aus)" : ""), el("td", "", MODE[c.mode || "dial"]), el("td", "", c.account || "direkt"),
     el("td", "", formatText(c)), el("td", "", channelText(c)), actions("calls", c)], "Noch kein Profil.");
 }
 
