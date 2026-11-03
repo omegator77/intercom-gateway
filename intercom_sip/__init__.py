@@ -1,2 +1,2 @@
 """SIP bridge: puts a SIP / RTP call (broadcast codec, EBU Tech 3326 style) into intercom lines."""
-__version__ = "0.1.4"
+__version__ = "0.1.5"
